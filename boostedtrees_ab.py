@@ -1,15 +1,9 @@
-# logreg_optuna_youden.py
-# Logistic Regression pipeline with Optuna hyperparameter tuning, Youden's J threshold,
-# and evaluation metrics for diabetes prediction.
+# boostedtrees_ab.py
+# XGBoost pipeline with Optuna hyperparameter tuning for A/B testing (variant B).
 """
-Industry-grade diabetes prediction training script.
+XGBoost model for diabetes prediction - A/B testing variant B.
 
-Key Components:
-  - Optuna hyperparameter optimization (100 trials)
-  - Youden's J statistic for optimal threshold selection
-  - Proper train/validation/test split (no data leakage)
-  - sklearn Pipeline with StandardScaler
-  - Comprehensive evaluation metrics
+Uses the same feature set as logistic regression for consistent comparison.
 """
 from pathlib import Path
 import json
@@ -19,10 +13,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import optuna
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -35,6 +26,7 @@ from sklearn.metrics import (
     matthews_corrcoef,
     roc_curve,
 )
+from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -45,23 +37,10 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 RANDOM_STATE = 42
 DATA_PATH = Path("cleaned_data.csv")
 ARTIFACTS_DIR = Path("model_artifacts")
-MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
-METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
-PREDICTIONS_PATH = ARTIFACTS_DIR / "test_predictions.csv"
+MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
+METRICS_PATH = ARTIFACTS_DIR / "boosted_metrics.json"
 
-# Selected features (mapped from original design, IncomeLevel removed as requested)
-# Original Name           -> Current Column
-# GeneralHealth           -> GenHlth (1-5 scale)
-# HasHighBP               -> HighBP (binary)
-# BMI                     -> BMI (numeric)
-# HasHighChol             -> HighChol (binary)
-# AgeCategory             -> Age (1-13)
-# HasWalkingDifficulty    -> DiffWalk (binary)
-# HadHeartIssues          -> HeartDiseaseorAttack (binary)
-# PoorPhysicalHealthDays  -> PhysHlth (0-30)
-# EducationLevel          -> Education (1-6)
-# IsPhysicallyActive      -> PhysActivity (binary)
-
+# Same features as logistic regression (for A/B testing consistency)
 SELECTED_FEATURES = [
     "GenHlth",
     "HighBP",
@@ -76,7 +55,6 @@ SELECTED_FEATURES = [
 ]
 TARGET_COLUMN = "Diabetes_binary"
 
-# Human-readable labels for UI/reporting
 FEATURE_LABELS = {
     "GenHlth": "General Health (1=Excellent to 5=Poor)",
     "HighBP": "Has High Blood Pressure",
@@ -92,11 +70,7 @@ FEATURE_LABELS = {
 
 
 def compute_youden_threshold(y_true: np.ndarray, y_proba: np.ndarray) -> float:
-    """
-    Compute optimal threshold using Youden's J statistic.
-    J = Sensitivity + Specificity - 1 = TPR - FPR
-    Returns threshold that maximizes J.
-    """
+    """Compute optimal threshold using Youden's J statistic."""
     fpr, tpr, thresholds = roc_curve(y_true, y_proba)
     youden_j = tpr - fpr
     best_idx = int(np.argmax(youden_j))
@@ -119,7 +93,7 @@ def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.nda
 
 def main() -> None:
     print("=" * 60)
-    print("DIABETES PREDICTION - Logistic Regression Pipeline")
+    print("DIABETES PREDICTION - XGBoost Pipeline (A/B Variant B)")
     print("Optuna Hyperparameter Tuning + Youden's J Threshold")
     print("=" * 60)
 
@@ -133,7 +107,6 @@ def main() -> None:
     df = pd.read_csv(DATA_PATH)
     print(f"✅ Data loaded: {df.shape[0]:,} rows, {df.shape[1]} columns")
 
-    # Validate columns
     required_columns = set(SELECTED_FEATURES + [TARGET_COLUMN])
     missing_columns = required_columns.difference(df.columns)
     if missing_columns:
@@ -146,11 +119,8 @@ def main() -> None:
     for feat in SELECTED_FEATURES:
         print(f"   - {feat}: {FEATURE_LABELS.get(feat, feat)}")
 
-    print(f"\n🎯 Target: {TARGET_COLUMN}")
-    print(f"   Class distribution: {dict(y.value_counts())}")
-
     # ---------------------------
-    # 2) Split data (train/validation/test)
+    # 2) Split data
     # ---------------------------
     print("\n✂️ Splitting data: 60% train / 20% validation / 20% test (stratified)...")
 
@@ -168,100 +138,69 @@ def main() -> None:
     # ---------------------------
     # 3) Optuna hyperparameter tuning
     # ---------------------------
-    print("\n🔄 Running Optuna hyperparameter optimization (100 trials)...")
-
-    # Scale training data for Optuna CV
-    scaler_optuna = StandardScaler()
-    X_train_scaled = scaler_optuna.fit_transform(X_train)
+    print("\n🔄 Running Optuna hyperparameter optimization (50 trials)...")
 
     def objective(trial):
-        C = trial.suggest_float("C", 0.01, 10, log=True)
-        solver = trial.suggest_categorical("solver", ["lbfgs", "liblinear"])
-
-        lr = LogisticRegression(
-            C=C,
-            solver=solver,
-            penalty="l2",
-            max_iter=2000,
-            random_state=RANDOM_STATE
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 100, 400),
+            "max_depth": trial.suggest_int("max_depth", 3, 7),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 10.0, log=True),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.01, 10.0, log=True),
+        }
+        
+        model = XGBClassifier(
+            **params,
+            random_state=RANDOM_STATE,
+            eval_metric="logloss",
+            n_jobs=1,
         )
-
-        # 5-fold cross-validation scoring ROC-AUC
-        scores = cross_val_score(
-            lr, X_train_scaled, y_train,
-            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
-            scoring="roc_auc"
-        )
+        
+        # 5-fold cross-validation
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+        scores = cross_val_score(model, X_train, y_train, cv=cv, scoring="roc_auc")
         return scores.mean()
 
     study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE))
-    study.optimize(objective, n_trials=100, show_progress_bar=True)
+    study.optimize(objective, n_trials=50, show_progress_bar=True)
 
     best_params = study.best_params
     print(f"\n✅ Best Optuna params: {best_params}")
     print(f"   Best CV ROC-AUC: {study.best_value:.4f}")
 
     # ---------------------------
-    # 4) Train final pipeline
+    # 4) Train final model
     # ---------------------------
-    print("\n🏗️ Training final pipeline with best parameters...")
+    print("\n🏗️ Training final XGBoost model...")
 
-    pipeline = Pipeline([
-        ("scaler", StandardScaler()),
-        ("model", LogisticRegression(
-            C=best_params["C"],
-            solver=best_params["solver"],
-            penalty="l2",
-            max_iter=2000,
-            random_state=RANDOM_STATE
-        ))
-    ])
-
-    pipeline.fit(X_train, y_train)
+    final_model = XGBClassifier(
+        **best_params,
+        random_state=RANDOM_STATE,
+        eval_metric="logloss",
+        n_jobs=1,
+    )
+    final_model.fit(X_train, y_train)
 
     # ---------------------------
-    # 5) Cross-validation diagnostics
-    # ---------------------------
-    print("\n📊 5-Fold Cross-validation on training set:")
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    X_train_scaled_final = pipeline.named_steps["scaler"].transform(X_train)
-
-    fold_accuracies = []
-    for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X_train, y_train), 1):
-        model_clone = LogisticRegression(
-            C=best_params["C"],
-            solver=best_params["solver"],
-            penalty="l2",
-            max_iter=2000,
-            random_state=RANDOM_STATE
-        )
-        model_clone.fit(X_train_scaled_final[train_idx], y_train.iloc[train_idx])
-        preds = model_clone.predict(X_train_scaled_final[val_idx])
-        acc = accuracy_score(y_train.iloc[val_idx], preds)
-        fold_accuracies.append(acc)
-        print(f"   Fold {fold_idx}: {acc:.4f}")
-
-    print(f"   Mean: {np.mean(fold_accuracies):.4f} ± {np.std(fold_accuracies):.4f}")
-
-    # ---------------------------
-    # 6) Youden's J threshold (on VALIDATION set - no leakage)
+    # 5) Youden's J threshold (on validation set)
     # ---------------------------
     print("\n🎯 Computing optimal threshold using Youden's J on validation set...")
-    val_proba = pipeline.predict_proba(X_val)[:, 1]
+    val_proba = final_model.predict_proba(X_val)[:, 1]
     best_threshold = compute_youden_threshold(y_val.values, val_proba)
     print(f"   Best threshold (Youden's J): {best_threshold:.4f}")
 
-    # Validation metrics at optimal threshold
     val_pred = (val_proba >= best_threshold).astype(int)
     val_metrics = evaluate_predictions(y_val.values, val_pred, val_proba)
     print(f"   Validation ROC-AUC: {val_metrics['roc_auc']:.4f}")
     print(f"   Validation F1: {val_metrics['f1']:.4f}")
 
     # ---------------------------
-    # 7) Final evaluation on TEST set
+    # 6) Final evaluation on TEST set
     # ---------------------------
     print("\n🔍 Evaluating on held-out TEST set...")
-    test_proba = pipeline.predict_proba(X_test)[:, 1]
+    test_proba = final_model.predict_proba(X_test)[:, 1]
     test_pred = (test_proba >= best_threshold).astype(int)
     test_metrics = evaluate_predictions(y_test.values, test_pred, test_proba)
 
@@ -273,8 +212,9 @@ def main() -> None:
     print(f"   ROC-AUC:       {test_metrics['roc_auc']:.4f}")
     print(f"   Cohen's Kappa: {test_metrics['cohen_kappa']:.4f}")
     print(f"   MCC:           {test_metrics['mcc']:.4f}")
-    print(f"\n   Confusion Matrix:")
+    
     cm = test_metrics["confusion_matrix"]
+    print(f"\n   Confusion Matrix:")
     print(f"   [[TN={cm[0][0]:5d}  FP={cm[0][1]:5d}]")
     print(f"    [FN={cm[1][0]:5d}  TP={cm[1][1]:5d}]]")
 
@@ -282,50 +222,39 @@ def main() -> None:
     print(classification_report(y_test, test_pred, digits=4, target_names=["No Diabetes", "Diabetes"]))
 
     # ---------------------------
-    # 8) Feature importance (coefficients)
+    # 7) Feature importance
     # ---------------------------
-    print("\n📈 Feature Importance (Logistic Regression Coefficients):")
-    model = pipeline.named_steps["model"]
-    coef_df = pd.DataFrame({
+    print("\n📈 Feature Importance (XGBoost gain):")
+    importance_df = pd.DataFrame({
         "Feature": SELECTED_FEATURES,
-        "Coefficient": model.coef_[0],
-        "Odds_Ratio": np.exp(model.coef_[0])
-    }).sort_values("Coefficient", ascending=False)
+        "Importance": final_model.feature_importances_
+    }).sort_values("Importance", ascending=False)
 
-    print("\n   🚀 Top factors increasing diabetes risk:")
-    for _, row in coef_df.head(5).iterrows():
-        direction = "↑" if row["Coefficient"] > 0 else "↓"
-        print(f"      {direction} {row['Feature']}: coef={row['Coefficient']:.4f}, OR={row['Odds_Ratio']:.3f}")
-
-    print("\n   🧊 Top factors decreasing diabetes risk:")
-    for _, row in coef_df.tail(3).iterrows():
-        direction = "↑" if row["Coefficient"] > 0 else "↓"
-        print(f"      {direction} {row['Feature']}: coef={row['Coefficient']:.4f}, OR={row['Odds_Ratio']:.3f}")
+    for _, row in importance_df.iterrows():
+        print(f"   {row['Feature']}: {row['Importance']:.4f}")
 
     # ---------------------------
-    # 9) Save artifacts
+    # 8) Save artifacts
     # ---------------------------
     ARTIFACTS_DIR.mkdir(exist_ok=True)
 
-    # Model bundle (for deployment)
+    # Save raw XGBClassifier (no wrapper needed - it has predict_proba natively)
     bundle = {
-        "pipeline": pipeline,
+        "pipeline": final_model,
         "threshold": best_threshold,
         "feature_columns": SELECTED_FEATURES,
         "feature_labels": FEATURE_LABELS,
-        "model_name": "logistic_regression",
+        "model_name": "xgboost_boosted_trees",
         "optuna_params": best_params,
         "optuna_best_cv_auc": study.best_value,
     }
     joblib.dump(bundle, MODEL_BUNDLE_PATH)
     print(f"\n💾 Model bundle saved: {MODEL_BUNDLE_PATH}")
 
-    # Metrics JSON
     metrics_output = {
         "threshold": best_threshold,
         "optuna_params": best_params,
         "optuna_best_cv_auc": study.best_value,
-        "cv_fold_accuracies": fold_accuracies,
         "validation_metrics": val_metrics,
         "test_metrics": test_metrics,
     }
@@ -333,17 +262,9 @@ def main() -> None:
         json.dump(metrics_output, f, indent=2)
     print(f"💾 Metrics saved: {METRICS_PATH}")
 
-    # Test predictions CSV
-    predictions_df = X_test.copy()
-    predictions_df["Actual"] = y_test.values
-    predictions_df["Predicted"] = test_pred
-    predictions_df["Probability"] = test_proba
-    predictions_df.to_csv(PREDICTIONS_PATH, index=False)
-    print(f"💾 Test predictions saved: {PREDICTIONS_PATH}")
-
     print("\n" + "=" * 60)
-    print("✅ Logistic Regression pipeline complete!")
-    print(f"   - Optuna trials: 100")
+    print("✅ XGBoost pipeline complete!")
+    print(f"   - Optuna trials: 50")
     print(f"   - Best threshold: {best_threshold:.4f} (Youden's J)")
     print(f"   - Test ROC-AUC: {test_metrics['roc_auc']:.4f}")
     print("=" * 60)
@@ -351,7 +272,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
