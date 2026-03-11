@@ -6,18 +6,31 @@ from typing import Any
 
 
 DB_PATH = Path("data/inference_logs.db")
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+
+def _get_database_url() -> str:
+    """Resolve DATABASE_URL from env var first, then Streamlit secrets."""
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url:
+        return url
+    try:
+        import streamlit as st
+        url = st.secrets.get("DATABASE_URL", "").strip()
+    except Exception:
+        pass
+    return url
 
 
 def _use_postgres() -> bool:
-    return DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://")
+    url = _get_database_url()
+    return url.startswith("postgresql://") or url.startswith("postgres://")
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
     if _use_postgres():
         import psycopg
 
-        with psycopg.connect(DATABASE_URL) as conn:
+        with psycopg.connect(_get_database_url()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -83,7 +96,7 @@ def log_inference(
     if _use_postgres():
         import psycopg
 
-        with psycopg.connect(DATABASE_URL) as conn:
+        with psycopg.connect(_get_database_url()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -141,7 +154,7 @@ def fetch_recent_logs(limit: int = 100, db_path: Path = DB_PATH) -> list[dict[st
     if _use_postgres():
         import psycopg
 
-        with psycopg.connect(DATABASE_URL) as conn:
+        with psycopg.connect(_get_database_url()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
