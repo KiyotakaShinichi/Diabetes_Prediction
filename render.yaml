@@ -1,0 +1,39 @@
+# Render Blueprint – deploys 3 free-tier services from one repo.
+# Import this via https://dashboard.render.com/blueprints → "New Blueprint Instance"
+
+services:
+  # 1. FastAPI backend API (inference, SHAP, drift)
+  - type: web
+    name: diabetes-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /health
+
+  # 2. Public Streamlit frontend (patient risk assessment)
+  - type: web
+    name: diabetes-app
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+
+  # 3. Admin dashboard (login-protected monitoring)
+  - type: web
+    name: diabetes-admin
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run admin_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
