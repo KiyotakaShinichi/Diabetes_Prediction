@@ -5,11 +5,14 @@ Clinical Decision Support Tool for Healthcare Professionals
 Run with: streamlit run streamlit_app.py
 """
 from pathlib import Path
+import uuid
 
 import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+from inference_db import log_inference
 
 # ---------------------------
 # Page Configuration
@@ -304,6 +307,22 @@ with tab_assess:
         input_df = pd.DataFrame([payload])[feature_columns]
         probability = float(pipeline.predict_proba(input_df)[:, 1][0])
         prediction = int(probability >= threshold)
+
+        # Log inference for monitoring/analytics (uses SQLite locally or DATABASE_URL if set)
+        try:
+            request_id = str(uuid.uuid4())
+            log_inference(
+                request_id=request_id,
+                model_variant="A",
+                model_name="logistic_regression",
+                probability=probability,
+                prediction=prediction,
+                threshold=threshold,
+                payload=payload,
+            )
+        except Exception:
+            # Logging must never break the clinical UI; swallow/log errors silently in Streamlit.
+            pass
         
         # Results Display
         st.markdown('<h3 class="section-header">Assessment Results</h3>', unsafe_allow_html=True)
