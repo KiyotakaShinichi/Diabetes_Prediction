@@ -9,3 +9,5 @@ streamlit>=1.47,<2
 xgboost>=3.0,<4
 psycopg[binary]>=3.2,<4
 optuna>=4.0,<5
+shap>=0.51,<1
+matplotlib>=3.10,<4

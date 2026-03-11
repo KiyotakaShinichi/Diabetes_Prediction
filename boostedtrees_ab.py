@@ -13,6 +13,8 @@ import joblib
 import numpy as np
 import pandas as pd
 import optuna
+import shap
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.metrics import (
     accuracy_score,
@@ -20,6 +22,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
+    brier_score_loss,
     confusion_matrix,
     classification_report,
     cohen_kappa_score,
@@ -39,6 +42,10 @@ DATA_PATH = Path("cleaned_data.csv")
 ARTIFACTS_DIR = Path("model_artifacts")
 MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
 METRICS_PATH = ARTIFACTS_DIR / "boosted_metrics.json"
+SHAP_PATH = ARTIFACTS_DIR / "boosted_shap_explainer.pkl"
+DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
+
+N_BOOTSTRAP = 200
 
 # Same features as logistic regression (for A/B testing consistency)
 SELECTED_FEATURES = [
@@ -85,10 +92,62 @@ def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.nda
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_true, y_proba)),
+        "brier_score": float(brier_score_loss(y_true, y_proba)),
         "cohen_kappa": float(cohen_kappa_score(y_true, y_pred)),
         "mcc": float(matthews_corrcoef(y_true, y_pred)),
         "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
     }
+
+
+def compute_drift_baseline(X_train: pd.DataFrame) -> dict:
+    """Compute training-set statistics for drift detection."""
+    return {
+        "means": X_train.mean().to_dict(),
+        "stds": X_train.std().to_dict(),
+        "medians": X_train.median().to_dict(),
+        "q25": X_train.quantile(0.25).to_dict(),
+        "q75": X_train.quantile(0.75).to_dict(),
+        "n_train": len(X_train),
+        "feature_columns": list(X_train.columns),
+    }
+
+
+def bootstrap_confidence_interval(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    threshold: float,
+    n_bootstrap: int = N_BOOTSTRAP,
+    alpha: float = 0.05,
+    seed: int = RANDOM_STATE,
+) -> dict:
+    """Bootstrap 95% confidence intervals for key metrics."""
+    rng = np.random.RandomState(seed)
+    n = len(y_true)
+    metrics_boot: dict[str, list[float]] = {
+        "accuracy": [], "precision": [], "recall": [],
+        "f1": [], "roc_auc": [], "brier_score": [],
+    }
+    for _ in range(n_bootstrap):
+        idx = rng.choice(n, size=n, replace=True)
+        y_t, y_p = y_true[idx], y_proba[idx]
+        y_pred = (y_p >= threshold).astype(int)
+        if len(np.unique(y_t)) < 2:
+            continue
+        metrics_boot["accuracy"].append(float(accuracy_score(y_t, y_pred)))
+        metrics_boot["precision"].append(float(precision_score(y_t, y_pred, zero_division=0)))
+        metrics_boot["recall"].append(float(recall_score(y_t, y_pred, zero_division=0)))
+        metrics_boot["f1"].append(float(f1_score(y_t, y_pred, zero_division=0)))
+        metrics_boot["roc_auc"].append(float(roc_auc_score(y_t, y_p)))
+        metrics_boot["brier_score"].append(float(brier_score_loss(y_t, y_p)))
+    result = {}
+    for metric, values in metrics_boot.items():
+        arr = np.array(values)
+        result[metric] = {
+            "mean": float(arr.mean()),
+            "ci_lower": float(np.percentile(arr, 100 * alpha / 2)),
+            "ci_upper": float(np.percentile(arr, 100 * (1 - alpha / 2))),
+        }
+    return result
 
 
 def main() -> None:
@@ -222,7 +281,60 @@ def main() -> None:
     print(classification_report(y_test, test_pred, digits=4, target_names=["No Diabetes", "Diabetes"]))
 
     # ---------------------------
-    # 7) Feature importance
+    # 7) Probability Calibration
+    # ---------------------------
+    print("\n🎯 Calibrating probabilities (Platt scaling on validation set)...")
+    calibrated_model = CalibratedClassifierCV(
+        final_model,
+        cv=5,
+        method="sigmoid",
+    )
+    calibrated_model.fit(
+        pd.concat([X_train, X_val]),
+        pd.concat([y_train, y_val]),
+    )
+
+    cal_proba = calibrated_model.predict_proba(X_test)[:, 1]
+    brier_before = brier_score_loss(y_test, test_proba)
+    brier_after = brier_score_loss(y_test, cal_proba)
+    print(f"   Brier score (before calibration): {brier_before:.4f}")
+    print(f"   Brier score (after calibration):  {brier_after:.4f}")
+
+    test_proba_final = cal_proba
+    test_pred_final = (test_proba_final >= best_threshold).astype(int)
+    test_metrics = evaluate_predictions(y_test.values, test_pred_final, test_proba_final)
+    print(f"   Calibrated ROC-AUC: {test_metrics['roc_auc']:.4f}")
+
+    # ---------------------------
+    # 8) Bootstrap Confidence Intervals
+    # ---------------------------
+    print(f"\n📊 Computing {N_BOOTSTRAP}-iteration bootstrap confidence intervals...")
+    ci_results = bootstrap_confidence_interval(
+        y_test.values, test_proba_final, best_threshold
+    )
+    print("   95% Confidence Intervals:")
+    for metric, vals in ci_results.items():
+        print(f"      {metric:12s}: {vals['mean']:.4f}  [{vals['ci_lower']:.4f}, {vals['ci_upper']:.4f}]")
+
+    # ---------------------------
+    # 9) SHAP Explainability
+    # ---------------------------
+    print("\n🔍 Computing SHAP values (TreeExplainer)...")
+    explainer = shap.TreeExplainer(final_model)
+    shap_values_test = explainer.shap_values(X_test)
+
+    mean_abs_shap = np.abs(shap_values_test).mean(axis=0)
+    shap_importance = pd.DataFrame({
+        "Feature": SELECTED_FEATURES,
+        "Mean_SHAP": mean_abs_shap
+    }).sort_values("Mean_SHAP", ascending=False)
+
+    print("\n   📈 Feature Importance (mean |SHAP|):")
+    for _, row in shap_importance.iterrows():
+        print(f"      {row['Feature']:25s}: {row['Mean_SHAP']:.4f}")
+
+    # ---------------------------
+    # 10) Feature importance (XGBoost native)
     # ---------------------------
     print("\n📈 Feature Importance (XGBoost gain):")
     importance_df = pd.DataFrame({
@@ -234,22 +346,40 @@ def main() -> None:
         print(f"   {row['Feature']}: {row['Importance']:.4f}")
 
     # ---------------------------
-    # 8) Save artifacts
+    # 11) Save artifacts
     # ---------------------------
     ARTIFACTS_DIR.mkdir(exist_ok=True)
 
-    # Save raw XGBClassifier (no wrapper needed - it has predict_proba natively)
     bundle = {
-        "pipeline": final_model,
+        "pipeline": calibrated_model,
+        "raw_model": final_model,
         "threshold": best_threshold,
         "feature_columns": SELECTED_FEATURES,
         "feature_labels": FEATURE_LABELS,
         "model_name": "xgboost_boosted_trees",
         "optuna_params": best_params,
         "optuna_best_cv_auc": study.best_value,
+        "confidence_intervals": ci_results,
+        "calibration": {
+            "method": "platt_scaling",
+            "brier_before": brier_before,
+            "brier_after": brier_after,
+        },
     }
     joblib.dump(bundle, MODEL_BUNDLE_PATH)
     print(f"\n💾 Model bundle saved: {MODEL_BUNDLE_PATH}")
+
+    # Save drift baseline
+    drift_baseline = compute_drift_baseline(X_train)
+    joblib.dump(drift_baseline, DRIFT_BASELINE_PATH)
+    print(f"💾 Drift baseline saved: {DRIFT_BASELINE_PATH}")
+
+    joblib.dump({
+        "explainer": explainer,
+        "expected_value": float(explainer.expected_value),
+        "feature_names": SELECTED_FEATURES,
+    }, SHAP_PATH)
+    print(f"💾 SHAP explainer saved: {SHAP_PATH}")
 
     metrics_output = {
         "threshold": best_threshold,
@@ -257,6 +387,11 @@ def main() -> None:
         "optuna_best_cv_auc": study.best_value,
         "validation_metrics": val_metrics,
         "test_metrics": test_metrics,
+        "confidence_intervals": ci_results,
+        "calibration": {
+            "brier_before": brier_before,
+            "brier_after": brier_after,
+        },
     }
     with open(METRICS_PATH, "w") as f:
         json.dump(metrics_output, f, indent=2)
@@ -267,6 +402,8 @@ def main() -> None:
     print(f"   - Optuna trials: 50")
     print(f"   - Best threshold: {best_threshold:.4f} (Youden's J)")
     print(f"   - Test ROC-AUC: {test_metrics['roc_auc']:.4f}")
+    print(f"   - Brier score: {brier_after:.4f} (calibrated)")
+    print(f"   - SHAP explainer: saved")
     print("=" * 60)
 
 

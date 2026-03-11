@@ -1,6 +1,7 @@
 """
 Diabetes Risk Assessment API
-FastAPI-based inference service with A/B testing support.
+FastAPI-based inference service with A/B testing, SHAP explainability,
+confidence intervals, and drift monitoring.
 
 Run with: uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
@@ -9,6 +10,7 @@ import hashlib
 import uuid
 
 import joblib
+import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -18,6 +20,10 @@ from inference_db import fetch_recent_logs, init_db, log_inference
 
 MODEL_BUNDLE_PATH = Path("model_artifacts/model_bundle.pkl")
 BOOSTED_BUNDLE_PATH = Path("model_artifacts/boosted_model_bundle.pkl")
+SHAP_PATH_A = Path("model_artifacts/shap_explainer.pkl")
+SHAP_PATH_B = Path("model_artifacts/boosted_shap_explainer.pkl")
+DRIFT_BASELINE_A = Path("model_artifacts/drift_baseline.pkl")
+DRIFT_BASELINE_B = Path("model_artifacts/boosted_drift_baseline.pkl")
 
 
 def choose_variant(user_id: str) -> str:
@@ -154,7 +160,146 @@ def predict(
         "risk_category": "HIGH" if prediction == 1 else "LOW",
         "probability": round(probability, 6),
         "threshold": round(threshold, 6),
+        "confidence_intervals": bundle.get("confidence_intervals"),
+        "calibration": bundle.get("calibration"),
     }
+
+
+@app.post("/explain")
+def explain(
+    payload: DiabetesFeatures,
+    model_variant: str = "A",
+) -> dict:
+    """
+    Get SHAP-based feature contribution explanation for a prediction.
+    
+    Returns per-feature SHAP values explaining why the model produced its prediction.
+    """
+    variant = model_variant.upper()
+    if variant not in {"A", "B"}:
+        raise HTTPException(status_code=400, detail="model_variant must be A or B")
+
+    shap_path = SHAP_PATH_A if variant == "A" else SHAP_PATH_B
+    bundle_path = MODEL_BUNDLE_PATH if variant == "A" else BOOSTED_BUNDLE_PATH
+
+    if not shap_path.exists():
+        raise HTTPException(status_code=404, detail=f"SHAP explainer not found for variant {variant}")
+
+    try:
+        shap_bundle = joblib.load(shap_path)
+        model_bundle = load_model_bundle(bundle_path)
+        pipeline = model_bundle["pipeline"]
+        threshold = float(model_bundle["threshold"])
+        feature_columns = model_bundle["feature_columns"]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Load error: {exc}") from exc
+
+    payload_dict = payload.model_dump()
+    input_df = pd.DataFrame([payload_dict])[feature_columns]
+
+    probability = float(pipeline.predict_proba(input_df)[:, 1][0])
+    prediction = int(probability >= threshold)
+
+    explainer = shap_bundle["explainer"]
+    expected_value = shap_bundle["expected_value"]
+
+    shap_values = explainer.shap_values(input_df)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]  # class 1 for binary
+
+    feature_contributions = []
+    for i, feat in enumerate(feature_columns):
+        feature_contributions.append({
+            "feature": feat,
+            "value": float(input_df.iloc[0][feat]),
+            "shap_value": float(shap_values[0][i]),
+        })
+
+    feature_contributions.sort(key=lambda x: abs(x["shap_value"]), reverse=True)
+
+    return {
+        "model_variant": variant,
+        "probability": round(probability, 6),
+        "prediction": prediction,
+        "risk_category": "HIGH" if prediction == 1 else "LOW",
+        "expected_value": round(float(expected_value), 6),
+        "feature_contributions": feature_contributions,
+    }
+
+
+@app.post("/drift-check")
+def drift_check(
+    payload: DiabetesFeatures,
+    model_variant: str = "A",
+) -> dict:
+    """
+    Check if a single input shows signs of data drift relative to training distribution.
+
+    Returns per-feature z-scores and overall drift flag.
+    """
+    variant = model_variant.upper()
+    if variant not in {"A", "B"}:
+        raise HTTPException(status_code=400, detail="model_variant must be A or B")
+
+    drift_path = DRIFT_BASELINE_A if variant == "A" else DRIFT_BASELINE_B
+    if not drift_path.exists():
+        raise HTTPException(status_code=404, detail=f"Drift baseline not found for variant {variant}")
+
+    baseline = joblib.load(drift_path)
+    payload_dict = payload.model_dump()
+
+    # Handle two baseline formats:
+    # Format A (LR): {feature_name: {mean, std, ...}, ...}
+    # Format B (XGB): {feature_columns: [...], means: {...}, stds: {...}, ...}
+    if "feature_columns" in baseline:
+        feature_cols = baseline["feature_columns"]
+        get_mean = lambda f: baseline["means"][f]
+        get_std = lambda f: baseline["stds"][f]
+    else:
+        feature_cols = list(baseline.keys())
+        get_mean = lambda f: baseline[f]["mean"]
+        get_std = lambda f: baseline[f]["std"]
+
+    drift_details = []
+    drift_flags = 0
+
+    for feat in feature_cols:
+        val = float(payload_dict.get(feat, 0))
+        mean = get_mean(feat)
+        std = get_std(feat)
+        z_score = (val - mean) / std if std > 0 else 0.0
+        is_outlier = abs(z_score) > 3.0
+
+        drift_details.append({
+            "feature": feat,
+            "value": val,
+            "training_mean": round(mean, 4),
+            "training_std": round(std, 4),
+            "z_score": round(z_score, 4),
+            "is_outlier": is_outlier,
+        })
+
+        if is_outlier:
+            drift_flags += 1
+
+    return {
+        "model_variant": variant,
+        "drift_detected": drift_flags > 0,
+        "outlier_count": drift_flags,
+        "total_features": len(feature_cols),
+        "feature_drift": drift_details,
+    }
+
+
+@app.get("/drift-baseline")
+def get_drift_baseline(model_variant: str = "A") -> dict:
+    """Return training-set statistics used for drift detection."""
+    variant = model_variant.upper()
+    drift_path = DRIFT_BASELINE_A if variant == "A" else DRIFT_BASELINE_B
+    if not drift_path.exists():
+        raise HTTPException(status_code=404, detail="Drift baseline not found")
+    baseline = joblib.load(drift_path)
+    return {"model_variant": variant, "baseline": baseline}
 
 
 @app.get("/inference-logs")

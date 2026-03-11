@@ -7,6 +7,7 @@ Run with: streamlit run streamlit_app.py
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -94,22 +95,37 @@ st.markdown("""
 # Model Loading
 # ---------------------------
 MODEL_BUNDLE_PATH = Path("model_artifacts/model_bundle.pkl")
+SHAP_EXPLAINER_PATH = Path("model_artifacts/shap_explainer.pkl")
 
 
 @st.cache_resource
 def load_model():
     if not MODEL_BUNDLE_PATH.exists():
-        return None, None, None, None
+        return None, None, None, None, None
     bundle = joblib.load(MODEL_BUNDLE_PATH)
     return (
         bundle["pipeline"],
         float(bundle["threshold"]),
         bundle["feature_columns"],
         bundle.get("feature_labels", {}),
+        bundle.get("confidence_intervals"),
     )
 
 
-pipeline, threshold, feature_columns, feature_labels = load_model()
+@st.cache_resource
+def load_shap_explainer():
+    if not SHAP_EXPLAINER_PATH.exists():
+        return None, None, None
+    shap_bundle = joblib.load(SHAP_EXPLAINER_PATH)
+    return (
+        shap_bundle["explainer"],
+        shap_bundle["expected_value"],
+        shap_bundle["feature_names"],
+    )
+
+
+pipeline, threshold, feature_columns, feature_labels, ci_bounds = load_model()
+shap_explainer, shap_expected, shap_features = load_shap_explainer()
 
 # ---------------------------
 # Header
@@ -326,6 +342,54 @@ with tab_assess:
                 "Description": feature_labels.get(k, k)
             } for k, v in payload.items()])
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+        # SHAP Explanation
+        if shap_explainer is not None:
+            with st.expander("🔍 SHAP Feature Contributions (Explainable AI)", expanded=True):
+                st.caption("How each feature pushed the prediction higher or lower")
+                shap_vals = shap_explainer.shap_values(input_df)
+                if isinstance(shap_vals, list):
+                    shap_vals = shap_vals[1]
+                
+                contributions = pd.DataFrame({
+                    "Feature": feature_columns,
+                    "SHAP Value": shap_vals[0],
+                    "Input Value": [float(input_df.iloc[0][c]) for c in feature_columns],
+                }).sort_values("SHAP Value", key=abs, ascending=False)
+                
+                # Horizontal bar chart
+                chart_df = contributions.set_index("Feature")["SHAP Value"].sort_values()
+                colors = ["#dc2626" if v > 0 else "#2563eb" for v in chart_df.values]
+                
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(8, 4))
+                ax.barh(chart_df.index, chart_df.values, color=colors)
+                ax.set_xlabel("SHAP Value (impact on prediction)")
+                ax.axvline(x=0, color="gray", linewidth=0.8)
+                ax.set_title("Feature Contributions to Risk Score")
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
+                
+                st.caption("🔴 Red = increases diabetes risk | 🔵 Blue = decreases diabetes risk")
+
+                st.write("**Detailed Values:**")
+                st.dataframe(contributions, use_container_width=True, hide_index=True)
+
+        # Confidence Intervals
+        if ci_bounds is not None:
+            with st.expander("📈 Model Confidence Intervals (95%)"):
+                st.caption("Bootstrap-estimated 95% CI from the held-out test set")
+                ci_df = pd.DataFrame([
+                    {
+                        "Metric": metric.upper(),
+                        "Mean": f"{vals['mean']:.4f}",
+                        "95% CI Lower": f"{vals['ci_lower']:.4f}",
+                        "95% CI Upper": f"{vals['ci_upper']:.4f}",
+                    }
+                    for metric, vals in ci_bounds.items()
+                ])
+                st.dataframe(ci_df, use_container_width=True, hide_index=True)
         
         # Disclaimer
         st.markdown("""
@@ -350,6 +414,10 @@ with tab_info:
     - **Algorithm:** Logistic Regression with L2 regularization
     - **Hyperparameter Optimization:** Optuna (100 trials, 5-fold CV)
     - **Threshold Selection:** Youden's J statistic (maximizes sensitivity + specificity)
+    - **Probability Calibration:** Platt scaling via CalibratedClassifierCV
+    - **Explainability:** SHAP (SHapley Additive exPlanations) feature contributions
+    - **Confidence Intervals:** 200-iteration bootstrap on held-out test set
+    - **Drift Monitoring:** Training-set baseline statistics for input validation
     - **Validation:** Separate train/validation/test splits to prevent data leakage
     
     ### Risk Factors Assessed
