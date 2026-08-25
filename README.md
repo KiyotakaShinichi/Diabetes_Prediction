@@ -1,5 +1,7 @@
 # Diabetes Prediction System
 
+[![CI](https://github.com/KiyotakaShinichi/Diabetes_Prediction/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/KiyotakaShinichi/Diabetes_Prediction/actions/workflows/ci.yml)
+
 Clinical decision support project for diabetes risk prediction using multiple machine learning approaches, with:
 
 - A FastAPI backend for inference and analytics
