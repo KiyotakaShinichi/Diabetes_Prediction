@@ -15,7 +15,10 @@ import streamlit as st
 from admin_auth import authenticate_user, ensure_default_admin
 from inference_db import fetch_recent_logs
 
-ARTIFACTS_DIR = Path("model_artifacts")
+# Resolve packaged resources from the project directory, never from the caller's
+# working directory, so the service behaves identically wherever it is launched.
+PROJECT_ROOT = Path(__file__).resolve().parent
+ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
 MODEL_BUNDLE_A = ARTIFACTS_DIR / "model_bundle.pkl"
 MODEL_BUNDLE_B = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
 METRICS_A = ARTIFACTS_DIR / "metrics.json"

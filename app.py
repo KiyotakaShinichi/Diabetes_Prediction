@@ -16,12 +16,17 @@ from pydantic import BaseModel, Field
 
 from inference_db import fetch_recent_logs, init_db, log_inference
 
-MODEL_BUNDLE_PATH = Path("model_artifacts/model_bundle.pkl")
-BOOSTED_BUNDLE_PATH = Path("model_artifacts/boosted_model_bundle.pkl")
-SHAP_PATH_A = Path("model_artifacts/shap_explainer.pkl")
-SHAP_PATH_B = Path("model_artifacts/boosted_shap_explainer.pkl")
-DRIFT_BASELINE_A = Path("model_artifacts/drift_baseline.pkl")
-DRIFT_BASELINE_B = Path("model_artifacts/boosted_drift_baseline.pkl")
+# Resolve packaged resources from the project directory, never from the caller's
+# working directory, so the service behaves identically wherever it is launched.
+PROJECT_ROOT = Path(__file__).resolve().parent
+ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
+
+MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
+BOOSTED_BUNDLE_PATH = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
+SHAP_PATH_A = ARTIFACTS_DIR / "shap_explainer.pkl"
+SHAP_PATH_B = ARTIFACTS_DIR / "boosted_shap_explainer.pkl"
+DRIFT_BASELINE_A = ARTIFACTS_DIR / "drift_baseline.pkl"
+DRIFT_BASELINE_B = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
 
 
 def choose_variant(user_id: str) -> str:

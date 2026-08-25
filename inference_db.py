@@ -4,7 +4,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-DB_PATH = Path("data/inference_logs.db")
+# Resolve packaged resources from the project directory, never from the caller's
+# working directory, so the service behaves identically wherever it is launched.
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+# Runtime SQLite log. Gitignored, and resolved at call time rather than bound
+# into function defaults so tests can redirect it to a temporary file.
+DB_PATH = PROJECT_ROOT / "data" / "inference_logs.db"
 
 
 def _get_database_url() -> str:

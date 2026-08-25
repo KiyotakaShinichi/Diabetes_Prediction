@@ -5,7 +5,13 @@ import os
 from pathlib import Path
 
 
-USERS_PATH = Path("admin_users.json")
+# Resolve packaged resources from the project directory, never from the caller's
+# working directory, so the service behaves identically wherever it is launched.
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+# NOTE: only the path resolution changes here. Credential storage, hashing and
+# the default-admin behaviour are untouched and remain the security track's work.
+USERS_PATH = PROJECT_ROOT / "admin_users.json"
 
 
 def _hash_password(password: str, salt: str) -> str:

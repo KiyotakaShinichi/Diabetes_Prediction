@@ -97,8 +97,13 @@ st.markdown("""
 # ---------------------------
 # Model Loading
 # ---------------------------
-MODEL_BUNDLE_PATH = Path("model_artifacts/model_bundle.pkl")
-SHAP_EXPLAINER_PATH = Path("model_artifacts/shap_explainer.pkl")
+# Resolve packaged resources from the project directory, never from the caller's
+# working directory, so the service behaves identically wherever it is launched.
+PROJECT_ROOT = Path(__file__).resolve().parent
+ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
+
+MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
+SHAP_EXPLAINER_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
 
 
 @st.cache_resource
