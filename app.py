@@ -30,8 +30,14 @@ DRIFT_BASELINE_B = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
 
 
 def choose_variant(user_id: str) -> str:
-    """Deterministic A/B assignment based on user_id hash."""
-    digest = hashlib.md5(user_id.encode("utf-8")).hexdigest()
+    """Deterministic A/B assignment based on user_id hash.
+
+    MD5 is used purely as a fast, stable bucketing function - it carries no
+    security property here, and usedforsecurity=False states that explicitly
+    (it also keeps this working under a FIPS-restricted build). The digest is
+    unchanged, so existing A/B assignments are stable.
+    """
+    digest = hashlib.md5(user_id.encode("utf-8"), usedforsecurity=False).hexdigest()
     return "A" if int(digest[-2:], 16) % 2 == 0 else "B"
 
 

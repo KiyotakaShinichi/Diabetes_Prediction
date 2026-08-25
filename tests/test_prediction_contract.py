@@ -115,7 +115,7 @@ def test_choose_variant_is_deterministic_and_binary(user_id):
 def test_choose_variant_follows_the_documented_md5_rule():
     """Pin the hashing rule so an A/B reassignment can never happen by accident."""
     for user_id in ("anonymous", "user-1", "user-2", "seed"):
-        digest = hashlib.md5(user_id.encode("utf-8")).hexdigest()
+        digest = hashlib.md5(user_id.encode("utf-8"), usedforsecurity=False).hexdigest()
         expected = "A" if int(digest[-2:], 16) % 2 == 0 else "B"
         assert choose_variant(user_id) == expected
 

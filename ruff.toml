@@ -35,25 +35,39 @@ select = [
     "SIM",  # flake8-simplify
     "PIE",  # flake8-pie
     "RUF",  # ruff-specific rules
+    "S",    # flake8-bandit (security)
+    "BLE",  # flake8-blind-except
 ]
 
-# NOT enabled yet, and each omission is a considered decision rather than an
-# oversight. The exact known findings are listed so the boundary is auditable:
+[lint.per-file-ignores]
+# Conventional, deliberate exceptions for the test suite only. Production code
+# is held to the full rule set above.
+"tests/**" = [
+    "S101",  # `assert` is how pytest expresses every check.
+    "S603",  # subprocess calls are to sys.executable and git, with fixed argv.
+    "S607",  # `git` is intentionally resolved from PATH.
+    "S108",  # "/tmp/data.csv" is a string fed to a path parser, never touched.
+    "S105",  # Test fixtures assign obvious dummy passwords by design; the
+             # security suite needs literal credentials to assert against.
+    "S106",  # Same, passed as arguments.
+]
+"conftest.py" = ["S101"]
+
+# Previously deferred, enabled in the security track:
 #
-#   S   (flake8-bandit)
-#     inference_db.py:19  S110 try/except/pass around the optional Streamlit
-#     secrets lookup.
+#   S (flake8-bandit) and BLE (flake8-blind-except) now apply to production
+#   code. The four broad `except Exception` sites this file used to list were
+#   resolved rather than suppressed:
 #
-#   BLE (flake8-blind-except)
-#     inference_db.py:19   the secrets lookup must tolerate both "streamlit is
-#                          not installed" and "no secrets.toml exists"; neither
-#                          exception type is importable from a public API.
-#     inference_db.py:189  json.loads fallback (PostgreSQL log listing)
-#     inference_db.py:212  json.loads fallback (SQLite log listing)
-#                          One malformed stored row must not break an entire
-#                          admin log listing.
+#     * the optional Streamlit secrets lookup in inference_db.py splits into a
+#       narrow ImportError plus one documented external-boundary catch, because
+#       StreamlitSecretsFileNotFoundError has no importable public name. It is
+#       the single remaining `# noqa: BLE001` in the governed scope, annotated
+#       in place, and it logs only the exception type - never a database URL.
+#     * both json.loads fallbacks narrowed to (ValueError, TypeError) and moved
+#       into _decode_payload(), which still degrades one bad row to {} so a
+#       single malformed record cannot fail an entire admin log listing.
 #
-# All four are real broad catches. Narrowing them changes runtime error
-# behaviour, which belongs with the pending admin/security review rather than a
-# CI task, so they are left visible and unsuppressed instead of being papered
-# over with per-line noqa comments.
+#   S324 on hashlib.md5 in app.py is resolved with usedforsecurity=False: the
+#   digest is unchanged and A/B bucketing stays stable, but the non-security
+#   intent is now explicit.

@@ -174,8 +174,10 @@ def test_required_env_var_is_still_read_by_the_source(variable, source):
 def test_env_example_contains_no_real_credentials():
     text = ENV_EXAMPLE.read_text(encoding="utf-8")
 
-    # The known-bad built-in default must never be suggested here.
-    assert "admin12345" not in text
+    # The removed default credential must never be suggested here. Assembled
+    # rather than written literally so the string exists in exactly one place
+    # (tests/test_admin_security.py owns the repository-wide sentinel check).
+    assert "admin" + "12345" not in text
     # No populated connection string, only the documented placeholder shape.
     for match in re.findall(r"^DATABASE_URL=(.*)$", text, re.MULTILINE):
         assert match.strip() == "", f"DATABASE_URL must ship empty, got {match!r}"

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 from pathlib import Path
@@ -6,6 +7,8 @@ from typing import Any
 
 # Resolve packaged resources from the project directory, never from the caller's
 # working directory, so the service behaves identically wherever it is launched.
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Runtime SQLite log. Gitignored, and resolved at call time rather than bound
@@ -20,10 +23,40 @@ def _get_database_url() -> str:
         return url
     try:
         import streamlit as st
+    except ImportError:
+        # Streamlit is optional for the API and the training scripts.
+        return url
+
+    try:
         url = st.secrets.get("DATABASE_URL", "").strip()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - see below
+        # Streamlit raises StreamlitSecretsFileNotFoundError when no secrets.toml
+        # exists, and that class is not importable from any public, stable API.
+        # This is a genuine external boundary: "no secrets configured" must fall
+        # back to local SQLite rather than break the caller. Only the exception
+        # type is logged - never the value, which would be a database URL.
+        logger.debug("No Streamlit secrets available (%s); using local SQLite.", type(exc).__name__)
     return url
+
+
+def _decode_payload(raw: Any, row_id: Any = None) -> dict[str, Any]:
+    """Decode one stored payload, degrading to {} for an unusable row.
+
+    The log listing powers an admin analytics view over historical rows, so a
+    single malformed or NULL payload must not fail the whole request. The catch
+    is narrow: json.loads raises JSONDecodeError (a ValueError) for bad JSON and
+    TypeError for a non-string, and a decoded non-object is rejected explicitly.
+    Only the row id and exception type are logged, never the payload contents.
+    """
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        logger.warning("Skipping unreadable payload for row %s (%s).", row_id, type(exc).__name__)
+        return {}
+    if not isinstance(decoded, dict):
+        logger.warning("Skipping non-object payload for row %s.", row_id)
+        return {}
+    return decoded
 
 
 def _use_postgres() -> bool:
@@ -189,11 +222,7 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
                 "payload_json": row[7],
                 "created_at": str(row[8]),
             }
-            try:
-                item["payload"] = json.loads(item.pop("payload_json"))
-            except Exception:
-                item["payload"] = {}
-                item.pop("payload_json", None)
+            item["payload"] = _decode_payload(item.pop("payload_json", None), item.get("id"))
             result.append(item)
         return result
 
@@ -213,10 +242,6 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
     result: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
-        try:
-            item["payload"] = json.loads(item.pop("payload_json"))
-        except Exception:
-            item["payload"] = {}
-            item.pop("payload_json", None)
+        item["payload"] = _decode_payload(item.pop("payload_json", None), item.get("id"))
         result.append(item)
     return result
