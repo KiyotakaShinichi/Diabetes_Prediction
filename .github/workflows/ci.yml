@@ -15,10 +15,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Single canonical runtime. Deliberately not a matrix: 3.11 is the only
-  # version the committed model artifacts have actually been verified against,
-  # and claiming untested versions pass would be dishonest.
-  PYTHON_VERSION: "3.11"
+  # Single canonical runtime, pinned to the exact patch that the committed model
+  # artifacts have been verified against. Deliberately not a matrix: claiming
+  # untested versions pass would be dishonest. render.yaml, the Dockerfile and
+  # the devcontainer track the same contract, enforced by
+  # tests/test_config_contracts.py.
+  PYTHON_VERSION: "3.11.16"
+  # The python:X.Y-slim image tag is published per minor version only.
+  PYTHON_MINOR: "3.11"
 
 jobs:
   test:
@@ -102,8 +106,8 @@ jobs:
       - name: Confirm image runtime matches the canonical version
         run: |
           IMAGE_PY="$(docker run --rm diabetes-api:ci python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-          echo "image python: ${IMAGE_PY}, expected: ${PYTHON_VERSION}"
-          test "${IMAGE_PY}" = "${PYTHON_VERSION}"
+          echo "image python: ${IMAGE_PY}, expected: ${PYTHON_MINOR}"
+          test "${IMAGE_PY}" = "${PYTHON_MINOR}"
 
       - name: Start container
         # DATABASE_URL is explicitly empty so the container falls back to local

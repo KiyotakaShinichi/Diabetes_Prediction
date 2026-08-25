@@ -1,4 +1,11 @@
 # Render Blueprint – deploys 3 free-tier services from one repo.
+#
+# Runtime contract: Python 3.11.16 and requirements.lock, matching CI, the
+# Dockerfile and the devcontainer. Render needs a fully qualified X.Y.Z when
+# PYTHON_VERSION is set. Installing the loose ranges in requirements.txt here
+# would resolve a newer scikit-learn/xgboost than the committed model bundles
+# were written with, reintroducing serialization-version warnings in
+# production. tests/test_config_contracts.py enforces this.
 # Import this via https://dashboard.render.com/blueprints → "New Blueprint Instance"
 
 services:
@@ -7,11 +14,11 @@ services:
     name: diabetes-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.lock
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12.3"
+        value: "3.11.16"
       - key: PYTHONUNBUFFERED
         value: "1"
     healthCheckPath: /health
@@ -21,19 +28,19 @@ services:
     name: diabetes-app
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.lock
     startCommand: streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false --server.headless true
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12.3"
+        value: "3.11.16"
 
   # 3. Admin dashboard (login-protected monitoring)
   - type: web
     name: diabetes-admin
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.lock
     startCommand: streamlit run admin_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false --server.headless true
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12.3"
+        value: "3.11.16"
