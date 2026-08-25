@@ -1,12 +1,24 @@
+# Human-maintainable source requirements.
+# For a byte-reproducible install use requirements.lock.txt instead (see README).
+#
+# scikit-learn and xgboost are pinned exactly because the committed artifacts in
+# model_artifacts/ are pickles that record the version that wrote them:
+#   * model_bundle.pkl, boosted_model_bundle.pkl and shap_explainer.pkl all
+#     carry _sklearn_version == "1.8.0"
+#   * the pickled booster inside boosted_model_bundle.pkl stores the UBJSON
+#     field version == [3, 0, 4]
+# Loading them under a different version raises InconsistentVersionWarning /
+# XGBoost's model-format warning. Changing either pin requires retraining.
+
 fastapi>=0.116,<1
 uvicorn[standard]>=0.35,<1
 pydantic>=2.11,<3
 joblib>=1.5,<2
-numpy>=2.2,<3
+numpy>=2.2,<3          # must stay 2.x: the pickles reference numpy._core
 pandas>=2.3,<3
-scikit-learn>=1.8,<2
+scikit-learn==1.8.0    # artifact-pinned, see above
 streamlit>=1.47,<2
-xgboost>=3.0,<4
+xgboost==3.0.4         # artifact-pinned, see above
 psycopg[binary]>=3.2,<4
 optuna>=4.0,<5
 shap>=0.51,<1

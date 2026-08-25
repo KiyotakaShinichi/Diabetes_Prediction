@@ -47,20 +47,65 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 
 ## Quick Start (Windows PowerShell)
 
+Canonical tested Python version: **3.11**.
+
+The model bundles in `model_artifacts/` are pickles that record the library
+version that wrote them, so `requirements.txt` pins `scikit-learn==1.8.0` and
+`xgboost==3.0.4` exactly. Installing other versions still works but raises
+`InconsistentVersionWarning` and an XGBoost model-format warning, and would
+require retraining to clear.
+
 ### 1. Create and activate virtual environment
 
 ```powershell
-python -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
 ### 2. Install dependencies
 
+Everyday development - resolves fresh versions within the ranges declared in
+`requirements.txt`:
+
 ```powershell
-pip install -r requirements.txt
+python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-### 3. Train models
+Reproducible install - exact, fully pinned transitive dependency set:
+
+```powershell
+python -m pip install -r requirements.lock.txt -r requirements-dev.txt
+```
+
+`requirements.lock.txt` is generated, not hand-edited. It is a *universal*
+lock: it carries environment markers, so one file installs correctly on
+Windows, on Linux (the Dockerfile target) and on macOS. Regenerate it after
+any change to `requirements.txt`:
+
+```powershell
+python -m pip install uv
+uv pip compile --universal --python-version 3.11 --output-file requirements.lock.txt requirements.txt
+```
+
+Development and test tooling in `requirements-dev.txt` is deliberately left
+unpinned: none of it participates in model deserialisation, so it is free to
+float. To pin it as well - for example once a CI job needs byte-identical
+tooling - compile it against the production lock:
+
+```powershell
+uv pip compile --universal --python-version 3.11 --constraint requirements.lock.txt --output-file requirements-dev.lock.txt requirements-dev.txt
+```
+
+### 3. Run the test suite
+
+The suite is self-contained: no network, no PostgreSQL, and no retraining. It
+uses a temporary SQLite database, so it never touches `data/`.
+
+```powershell
+python -m pytest -q
+```
+
+### 4. Train models
 
 ```powershell
 # Variant A (required)
@@ -84,7 +129,7 @@ Optional variant B outputs:
 - `boosted_shap_explainer.pkl`
 - `boosted_drift_baseline.pkl`
 
-### 4. Run services
+### 5. Run services
 
 Use separate terminals:
 
