@@ -41,6 +41,39 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 - `boostedtrees_ab.py`: Boosted-tree training pipeline for variant B
 - Other training experiments: additional `*.py` model files in the repository
 
+### Shared evaluation core
+
+`ml_core/` holds the model-agnostic evaluation layer that **both** maintained
+pipelines use, so there is one owner per behaviour rather than two drifting
+copies:
+
+| Module | Owns |
+| --- | --- |
+| `ml_core/evaluation.py` | the metric set and its zero-division policy |
+| `ml_core/bootstrap.py` | percentile bootstrap confidence intervals |
+| `ml_core/thresholds.py` | Youden's J threshold selection |
+
+It is pure and import-safe: nothing in it reads a dataset, fits a model, writes
+a file, prints, plots, or mutates global state (including warnings filters and
+the global NumPy RNG). Training orchestration - data loading, the Optuna study,
+model fitting, calibration, SHAP and artifact writing - stays in the pipeline
+scripts. `compute_drift_baseline` is deliberately *not* shared: the two
+pipelines emit different baseline schemas and `/drift-check` branches on that
+difference.
+
+`compute_youden_threshold` guarantees a **finite** serving threshold within
+`[0, 1]`. `sklearn.metrics.roc_curve` prepends a synthetic infinite threshold,
+and the previous implementation could select it whenever no real cut-point beat
+random - yielding a threshold that classifies every patient as negative. Only
+finite candidates are considered now; a single-class target is rejected rather
+than silently given a neutral value. Where the old code already returned a
+finite threshold, the selected value is unchanged, which the test suite proves
+against a pinned copy of the old implementation.
+
+Full training remains offline and reproducible via the commands below. It is
+**not** run in normal CI - CI exercises the shared utilities and verifies that
+the committed artifacts still load, rather than retraining models.
+
 ### Data and Artifacts
 
 - `cleaned_data.csv`: Main training dataset
