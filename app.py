@@ -5,18 +5,16 @@ confidence intervals, and drift monitoring.
 
 Run with: uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
-from pathlib import Path
 import hashlib
 import uuid
+from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from inference_db import fetch_recent_logs, init_db, log_inference
-
 
 MODEL_BUNDLE_PATH = Path("model_artifacts/model_bundle.pkl")
 BOOSTED_BUNDLE_PATH = Path("model_artifacts/boosted_model_bundle.pkl")
@@ -35,7 +33,7 @@ def choose_variant(user_id: str) -> str:
 class DiabetesFeatures(BaseModel):
     """
     Clinical input features for diabetes risk assessment.
-    
+
     Features mapped from BRFSS survey data:
     - GenHlth: General health (1=Excellent to 5=Poor)
     - HighBP: High blood pressure (0=No, 1=Yes)
@@ -99,12 +97,12 @@ def predict(
 ) -> dict:
     """
     Predict diabetes risk from clinical features.
-    
+
     Parameters:
     - payload: Clinical feature values
     - user_id: Optional user identifier for A/B assignment
     - model_variant: 'auto' (A/B testing), 'A' (logistic regression), or 'B' (boosted trees)
-    
+
     Returns:
     - Prediction result with probability and risk classification
     """
@@ -172,7 +170,7 @@ def explain(
 ) -> dict:
     """
     Get SHAP-based feature contribution explanation for a prediction.
-    
+
     Returns per-feature SHAP values explaining why the model produced its prediction.
     """
     variant = model_variant.upper()
@@ -252,21 +250,21 @@ def drift_check(
     # Format A (LR): {feature_name: {mean, std, ...}, ...}
     # Format B (XGB): {feature_columns: [...], means: {...}, stds: {...}, ...}
     if "feature_columns" in baseline:
-        feature_cols = baseline["feature_columns"]
-        get_mean = lambda f: baseline["means"][f]
-        get_std = lambda f: baseline["stds"][f]
+        feature_cols = list(baseline["feature_columns"])
+        means = baseline["means"]
+        stds = baseline["stds"]
     else:
         feature_cols = list(baseline.keys())
-        get_mean = lambda f: baseline[f]["mean"]
-        get_std = lambda f: baseline[f]["std"]
+        means = {feat: baseline[feat]["mean"] for feat in feature_cols}
+        stds = {feat: baseline[feat]["std"] for feat in feature_cols}
 
     drift_details = []
     drift_flags = 0
 
     for feat in feature_cols:
         val = float(payload_dict.get(feat, 0))
-        mean = get_mean(feat)
-        std = get_std(feat)
+        mean = means[feat]
+        std = stds[feat]
         z_score = (val - mean) / std if std > 0 else 0.0
         is_outlier = abs(z_score) > 3.0
 
@@ -306,7 +304,7 @@ def get_drift_baseline(model_variant: str = "A") -> dict:
 def inference_logs(limit: int = 100) -> dict:
     """
     Retrieve recent inference logs (admin endpoint).
-    
+
     Parameters:
     - limit: Maximum number of logs to return (1-1000)
     """
@@ -319,7 +317,7 @@ def inference_logs(limit: int = 100) -> dict:
 def analytics_summary(limit: int = 1000) -> dict:
     """
     Get aggregated analytics summary (admin endpoint).
-    
+
     Parameters:
     - limit: Number of recent logs to aggregate (1-10000)
     """

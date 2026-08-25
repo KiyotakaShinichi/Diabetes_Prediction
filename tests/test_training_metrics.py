@@ -20,8 +20,8 @@ from conftest import ARTIFACTS_DIR
 # which would silence warnings for the whole pytest session. Snapshot the filters
 # and put them back so the rest of the suite still reports warnings normally.
 _SAVED_WARNING_FILTERS = warnings.filters[:]
-import boostedtrees_ab as xgb_train
-import logisticregression_only as lr_train
+import boostedtrees_ab as xgb_train  # noqa: E402
+import logisticregression_only as lr_train  # noqa: E402
 
 warnings.filters[:] = _SAVED_WARNING_FILTERS
 
@@ -258,7 +258,7 @@ def test_committed_metrics_are_internally_consistent(
 
     assert {"threshold", "test_metrics", "validation_metrics", "confidence_intervals"} <= set(metrics)
     test_metrics = metrics["test_metrics"]
-    assert EVALUATION_KEYS <= set(test_metrics)
+    assert set(test_metrics) >= EVALUATION_KEYS
 
     (tn, fp), (fn, tp) = test_metrics["confusion_matrix"]
     assert test_metrics["accuracy"] == pytest.approx((tp + tn) / (tp + tn + fp + fn))

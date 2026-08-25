@@ -4,7 +4,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-
 DB_PATH = Path("data/inference_logs.db")
 
 
@@ -23,7 +22,7 @@ def _get_database_url() -> str:
 
 def _use_postgres() -> bool:
     url = _get_database_url()
-    return url.startswith("postgresql://") or url.startswith("postgres://")
+    return url.startswith(("postgresql://", "postgres://"))
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -158,18 +157,18 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
     if _use_postgres():
         import psycopg
 
-        with psycopg.connect(_get_database_url()) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, request_id, model_variant, model_name, probability, prediction, threshold, payload_json, created_at
-                    FROM inference_logs
-                    ORDER BY id DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
-                rows = cur.fetchall()
+        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, request_id, model_variant, model_name, probability,
+                       prediction, threshold, payload_json, created_at
+                FROM inference_logs
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
 
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -196,7 +195,8 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT id, request_id, model_variant, model_name, probability, prediction, threshold, payload_json, created_at
+            SELECT id, request_id, model_variant, model_name, probability,
+                   prediction, threshold, payload_json, created_at
             FROM inference_logs
             ORDER BY id DESC
             LIMIT ?

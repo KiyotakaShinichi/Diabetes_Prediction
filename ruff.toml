@@ -1,0 +1,59 @@
+# Lint contract for CI.
+#
+# SCOPE IS DELIBERATELY INCREMENTAL. This repository carries a large body of
+# unmaintained training experiments (bernouli_nb.py, qsvm.py, neko.py, tuning.py,
+# logreg+clustering.py and ~15 more) that have never been linted. Enforcing any
+# rule set across all of them would produce hundreds of findings unrelated to the
+# code that is actually served, so `include` below names the governed files
+# explicitly and `ruff check .` checks only those.
+#
+# Files outside `include` are UNLINTED, not blessed. Bringing one into scope is a
+# separate, per-file task.
+
+target-version = "py311"
+line-length = 120
+
+include = [
+    "app.py",
+    "inference_db.py",
+    "conftest.py",
+    "tests/**/*.py",
+    "tools/**/*.py",
+]
+
+[lint]
+# Pinned explicitly rather than relying on ruff's default selection, which has
+# widened between releases and would otherwise make CI results drift when the
+# pinned ruff version is bumped.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "PIE",  # flake8-pie
+    "RUF",  # ruff-specific rules
+]
+
+# NOT enabled yet, and each omission is a considered decision rather than an
+# oversight. The exact known findings are listed so the boundary is auditable:
+#
+#   S   (flake8-bandit)
+#     inference_db.py:19  S110 try/except/pass around the optional Streamlit
+#     secrets lookup.
+#
+#   BLE (flake8-blind-except)
+#     inference_db.py:19   the secrets lookup must tolerate both "streamlit is
+#                          not installed" and "no secrets.toml exists"; neither
+#                          exception type is importable from a public API.
+#     inference_db.py:189  json.loads fallback (PostgreSQL log listing)
+#     inference_db.py:212  json.loads fallback (SQLite log listing)
+#                          One malformed stored row must not break an entire
+#                          admin log listing.
+#
+# All four are real broad catches. Narrowing them changes runtime error
+# behaviour, which belongs with the pending admin/security review rather than a
+# CI task, so they are left visible and unsuppressed instead of being papered
+# over with per-line noqa comments.
