@@ -2,6 +2,19 @@
 # Efficient Logistic Regression pipeline using saga solver (handles large data + L1/L2 regularization)
 # Includes: GridSearchCV, CV accuracies, learning curve, confusion matrix, ROC curve, feature importance, and full metrics report.
 
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'efficient_lr.py')
+_ARGS = experiment_config.parse_args(
+    'efficient_lr.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+FINAL_CSV = experiment_config.result_path(_ARGS, 'final_results_efficient_logreg.csv')
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -13,13 +26,12 @@ from sklearn.metrics import (
     confusion_matrix, classification_report, cohen_kappa_score, matthews_corrcoef, roc_curve
 )
 import warnings
+
 warnings.filterwarnings("ignore")
 
 # ---------------------------
 # 1) Config / paths
 # ---------------------------
-DATA_PATH = "C:/Users/L/Downloads/cleaned_data_upd.csv"   # change to your uploaded file name in Colab
-FINAL_CSV = "C:/Users/L/Downloads/final_results_efficient_logreg.csv"
 
 # ---------------------------
 # 2) Load & prepare data

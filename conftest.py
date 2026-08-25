@@ -12,10 +12,10 @@ Isolation guarantees provided here:
   the tracked ``data/inference_logs.db``;
 * PostgreSQL/Neon resolution is short-circuited, so a developer or CI runner
   with ``DATABASE_URL`` exported can never point the suite at a real database;
-* the working directory is pinned to the repository root, because production
-  code resolves ``model_artifacts/`` and ``data/`` relative to the CWD.
+* nothing depends on the working directory: production code resolves
+  ``model_artifacts/`` and ``data/`` from the project directory, and the
+  ``foreign_cwd`` fixture below exists to prove it.
 """
-import os
 from pathlib import Path
 
 import pytest
@@ -46,13 +46,17 @@ VALID_PAYLOAD: dict[str, float] = {
 }
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _pin_working_directory():
-    """Production code uses CWD-relative paths, so pin it to the repo root."""
-    previous = os.getcwd()
-    os.chdir(REPO_ROOT)
-    yield REPO_ROOT
-    os.chdir(previous)
+@pytest.fixture
+def foreign_cwd(tmp_path, monkeypatch) -> Path:
+    """Run a test from a temporary directory outside the repository.
+
+    Application resources now resolve from the project directory rather than
+    the process working directory, so this must change nothing.
+    """
+    outside = tmp_path / "somewhere-else"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    return outside
 
 
 @pytest.fixture

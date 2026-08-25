@@ -2,6 +2,19 @@
 # Enhanced Boosted Trees pipeline with stacking (XGB + RF + LGBM + CatBoost)
 # Includes Optuna hyperparameter tuning, Youden's J threshold, CV accuracies, learning curve, full metrics, and plots
 
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'tuning.py')
+_ARGS = experiment_config.parse_args(
+    'tuning.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+FINAL_CSV = experiment_config.result_path(_ARGS, 'final_results_boostedtrees.csv')
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -19,13 +32,12 @@ from lightgbm import LGBMClassifier
 from catboost import CatBoostClassifier
 import optuna
 import warnings
+
 warnings.filterwarnings("ignore")
 
 # ---------------------------
 # 1) Config / Paths
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/cleaned_data_upd.csv"
-FINAL_CSV = r"C:/Users/L/Downloads/final_results_boostedtrees.csv"
 
 # ---------------------------
 # 2) Load & Prepare Data

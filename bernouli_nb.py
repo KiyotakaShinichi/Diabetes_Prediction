@@ -2,6 +2,18 @@
 # nb_bernoulli_fixed.py
 # ===============================
 
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'bernouli_nb.py')
+_ARGS = experiment_config.parse_args(
+    'bernouli_nb.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -13,12 +25,12 @@ from sklearn.metrics import (
     confusion_matrix, classification_report, roc_curve
 )
 import warnings
+
 warnings.filterwarnings("ignore")
 
 # ---------------------------
 # Load data
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/cleaned_data_upd.csv"
 
 print("📥 Loading dataset...")
 df = pd.read_csv(DATA_PATH)
@@ -110,9 +122,4 @@ roc_fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'BNB (AUC={auc:.3
 roc_fig.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', line=dict(dash='dash'), name='Random'))
 roc_fig.update_layout(title='ROC Curve - BernoulliNB', xaxis_title='FPR', yaxis_title='TPR')
 roc_fig.show()
-
-
-
-
-
 

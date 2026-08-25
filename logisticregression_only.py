@@ -12,6 +12,7 @@ Key Components:
   - Comprehensive evaluation metrics
 """
 from pathlib import Path
+import argparse
 import json
 import warnings
 
@@ -46,8 +47,11 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # Configuration
 # ---------------------------
 RANDOM_STATE = 42
-DATA_PATH = Path("cleaned_data.csv")
-ARTIFACTS_DIR = Path("model_artifacts")
+# Defaults resolve from the project directory, not the caller's working
+# directory. Override either with --data-path / --artifacts-dir.
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_PATH = PROJECT_ROOT / "cleaned_data.csv"
+ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
 MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
 METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
 PREDICTIONS_PATH = ARTIFACTS_DIR / "test_predictions.csv"
@@ -520,7 +524,30 @@ def main() -> None:
     print("=" * 60)
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI for the training run. --help exits before any data is read."""
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--data-path", type=Path, default=DATA_PATH, metavar="CSV",
+                        help="Training dataset.")
+    parser.add_argument("--artifacts-dir", type=Path, default=ARTIFACTS_DIR, metavar="DIR",
+                        help="Directory the model bundle and metrics are written to.")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    _args = parse_args()
+    # Rebind the module-level paths that main() reads. Hyperparameters,
+    # features, seeds, thresholds and artifact formats are untouched.
+    DATA_PATH = _args.data_path
+    ARTIFACTS_DIR = _args.artifacts_dir
+    MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
+    METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
+    PREDICTIONS_PATH = ARTIFACTS_DIR / "test_predictions.csv"
+    SHAP_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
+    DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "drift_baseline.pkl"
     main()
 
 

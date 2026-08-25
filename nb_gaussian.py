@@ -1,4 +1,19 @@
 # nb_gaussian.py
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'nb_gaussian.py')
+_ARGS = experiment_config.parse_args(
+    'nb_gaussian.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+FINAL_CSV = experiment_config.result_path(_ARGS, 'final_results_gaussian.csv')
+CLUSTER_PROFILE_CSV = experiment_config.result_path(_ARGS, 'patient_cluster_profiles_gaussian.csv')
+CENTROIDS_CSV = experiment_config.result_path(_ARGS, 'cluster_centroids_gaussian.csv')
+
 """
 Gaussian Naive Bayes pipeline (mirrors your Logistic Regression pipeline)
 Save this block as nb_gaussian.py and run.
@@ -20,15 +35,12 @@ from sklearn.metrics import (
     silhouette_score, roc_curve
 )
 import warnings
+
 warnings.filterwarnings("ignore")
 
 # ---------------------------
 # Config / paths
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/cleaned_data_upd.csv"
-FINAL_CSV = r"C:/Users/L/Downloads/final_results_gaussian.csv"
-CLUSTER_PROFILE_CSV = r"C:/Users/L/Downloads/patient_cluster_profiles_gaussian.csv"
-CENTROIDS_CSV = r"C:/Users/L/Downloads/cluster_centroids_gaussian.csv"
 
 # ---------------------------
 # 1) Load & prepare data
@@ -163,6 +175,4 @@ roc_fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f'GNB (AUC={auc:.3
 roc_fig.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', line=dict(dash='dash'), name='Random'))
 roc_fig.update_layout(title='ROC Curve - GaussianNB (Test set)', xaxis_title='FPR', yaxis_title='TPR')
 roc_fig.show()
-
-
 

@@ -3,6 +3,19 @@
 # Boosted Trees classification pipeline
 # Includes GridSearchCV, CV accuracies, learning curve, confusion matrix, ROC curve, and full metrics report.
 
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'boostedTrees.py')
+_ARGS = experiment_config.parse_args(
+    'boostedTrees.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+FINAL_CSV = experiment_config.result_path(_ARGS, 'final_results_boostedtrees.csv')
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -14,6 +27,7 @@ from sklearn.metrics import (
     matthews_corrcoef, roc_curve
 )
 import warnings
+
 warnings.filterwarnings("ignore")
 
 from xgboost import XGBClassifier
@@ -21,8 +35,6 @@ from xgboost import XGBClassifier
 # ---------------------------
 # 1) Config / Paths
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/cleaned_data_upd.csv"
-FINAL_CSV = r"C:/Users/L/Downloads/final_results_boostedtrees.csv"
 
 # ---------------------------
 # 2) Load & Prepare Data

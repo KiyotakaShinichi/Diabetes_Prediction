@@ -4,6 +4,22 @@
 # DBI+Elbow+CH voting validation, t-SNE visualization, CSV exports, and LR-based lift chart.
 # Lift charts now show coefficient, odds ratio, and absolute lift.
 
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'logreg+clustering.py')
+_ARGS = experiment_config.parse_args(
+    'logreg+clustering.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+FINAL_CSV = experiment_config.result_path(_ARGS, 'final_results_clusters_first_kproto.csv')
+CLUSTER_PROFILE_CSV = experiment_config.result_path(_ARGS, 'patient_cluster_profiles_clusters_first_kproto.csv')
+CENTROIDS_CSV = experiment_config.result_path(_ARGS, 'cluster_centroids_clusters_first_kproto.csv')
+LIFT_CSV = experiment_config.result_path(_ARGS, 'lr_lift_table.csv')
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -27,11 +43,6 @@ warnings.filterwarnings("ignore")
 # ---------------------------
 # Config / paths
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/cleaned_data_upd.csv"
-FINAL_CSV = r"C:/Users/L/Downloads/final_results_clusters_first_kproto.csv"
-CLUSTER_PROFILE_CSV = r"C:/Users/L/Downloads/patient_cluster_profiles_clusters_first_kproto.csv"
-CENTROIDS_CSV = r"C:/Users/L/Downloads/cluster_centroids_clusters_first_kproto.csv"
-LIFT_CSV = r"C:/Users/L/Downloads/lr_lift_table.csv"
 
 # ---------------------------
 # 1) Load & prepare data
@@ -360,6 +371,4 @@ print(" - Final CSV:", FINAL_CSV)
 print(" - Cluster profiles:", CLUSTER_PROFILE_CSV)
 print(" - Cluster centroids:", CENTROIDS_CSV)
 print(" - LR-based Lift CSV:", LIFT_CSV)
-
-
 

@@ -1,5 +1,19 @@
 # enc1_smoteenn_balanced.py
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'enc1_smoteenn.py')
+_ARGS = experiment_config.parse_args(
+    'enc1_smoteenn.py',
+    default_data_path=experiment_config.PROJECT_ROOT / 'enc1.csv',
+)
+DATA_PATH = _ARGS.data_path
+OUTPUT_PATH = experiment_config.result_path(_ARGS, 'enc1_smoteenn.csv')
+
 import pandas as pd
+
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from imblearn.combine import SMOTEENN
@@ -8,8 +22,6 @@ from collections import Counter
 # ---------------------------
 # 1) Config / Paths
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/enc1.csv"
-OUTPUT_PATH = r"C:/Users/L/Downloads/enc1_smoteenn.csv"
 
 # ---------------------------
 # 2) Load & Prepare Data

@@ -2,6 +2,19 @@
 # Bilayer Neural Network classification pipeline
 # Includes train/validation split, learning curve, ROC curve, and metrics report.
 
+# Path configuration is resolved before the heavy third-party imports below so
+# that `python <script> --help` works without plotly/imblearn/kmodes/statsmodels
+# installed. See experiment_config.py.
+import experiment_config
+
+experiment_config.require_direct_execution(__name__, 'bilayered_neural.py')
+_ARGS = experiment_config.parse_args(
+    'bilayered_neural.py',
+    default_data_path=experiment_config.LEGACY_DATA_PATH,
+)
+DATA_PATH = _ARGS.data_path
+FINAL_CSV = experiment_config.result_path(_ARGS, 'final_results_bilayer_nn.csv')
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -19,13 +32,12 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 import warnings
+
 warnings.filterwarnings("ignore")
 
 # ---------------------------
 # 1) Config / Paths
 # ---------------------------
-DATA_PATH = r"C:/Users/L/Downloads/cleaned_data_upd.csv"
-FINAL_CSV = r"C:/Users/L/Downloads/final_results_bilayer_nn.csv"
 
 # ---------------------------
 # 2) Load & Prepare Data

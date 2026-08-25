@@ -6,6 +6,11 @@ inference_log.db
 _test_*.py
 data/
 
+# Local environment files (never commit real secrets). .env.example is tracked.
+.env
+.env.*
+!.env.example
+
 # Streamlit secrets (never commit real secrets)
 .streamlit/secrets.toml
 
@@ -15,3 +20,6 @@ data/
 # Test / lint caches
 .pytest_cache/
 .ruff_cache/
+
+# Archived experiment outputs (see experiment_config.DEFAULT_RESULTS_DIR)
+experiment_results/
