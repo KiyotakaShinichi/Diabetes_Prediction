@@ -276,13 +276,36 @@ The default models use 10 features:
 
 ## Admin Access
 
-- Admin credentials are stored in `admin_users.json`
-- A default admin may be auto-created by auth utilities
-- To create additional admin users:
+**There is no default administrator.** The dashboard fails closed: if no
+credential provider is configured, every login is refused and the login page
+says so. No account is ever created implicitly, and importing any module never
+writes credentials.
+
+Configure exactly one of the two providers.
+
+**Environment provider** - for Render, containers, any stateless deployment.
+Both variables are required; setting only one is a configuration error and
+still fails closed rather than falling back to the other provider.
 
 ```powershell
-python create_admin_user.py
+$env:ADMIN_USERNAME = "alice"
+$env:ADMIN_PASSWORD = "<a real secret, managed as a platform secret>"
 ```
+
+**Runtime user store** - for local use. Create an account explicitly:
+
+```powershell
+python create_admin_user.py --username alice
+```
+
+The password is prompted for with `getpass`; it is never accepted as a
+command-line argument, which would leak it into shell history and the process
+list. It is stored as a salted PBKDF2-HMAC-SHA256 hash (600,000 iterations) in
+`data/admin_users.json`. Minimum length is 8 characters.
+
+That file is **gitignored and not committed**, and is created only by the
+command above. A malformed or missing store means "no file-backed users" - it
+never means "create a default".
 
 Important:
 

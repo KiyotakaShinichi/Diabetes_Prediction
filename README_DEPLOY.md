@@ -84,11 +84,26 @@ API Docs: `http://localhost:8000/docs`
 - Inference analytics and A/B test metrics
 - CSV export of logs
 
-Default credentials: `admin / admin12345`
+There is **no default administrator** and no committed credential file. The
+dashboard fails closed until one provider is configured.
 
-Create new admin users:
+For a stateless deployment (Render), set both variables as platform secrets -
+never as values in `render.yaml`:
+
+```
+ADMIN_USERNAME=<your admin username>
+ADMIN_PASSWORD=<a real secret>
+```
+
+Setting only one is a configuration error and still fails closed.
+
+For a host with persistent storage, create an account explicitly instead. The
+password is prompted for with getpass - never passed as an argument - and
+stored as a salted PBKDF2-HMAC-SHA256 hash in the gitignored
+`data/admin_users.json`:
+
 ```powershell
-python create_admin_user.py
+python create_admin_user.py --username alice
 ```
 
 ## Model Features

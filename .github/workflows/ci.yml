@@ -74,13 +74,34 @@ jobs:
         run: python -m pytest -q
 
       - name: Compile and import smoke
-        # admin_app.py and streamlit_app.py are intentionally NOT imported: both
-        # execute Streamlit UI at import time, and admin_app additionally calls
-        # ensure_default_admin(), which would write admin_users.json and dirty
-        # the tree. They are still byte-compiled by compileall below.
+        # The Streamlit entrypoints are now import-safe, so they are imported
+        # here too: importing them must render no UI, load no model and write no
+        # credentials. The clean-tree gate below is what proves the last part.
         run: |
           python -m compileall -q -x '\.(venv|git)' .
-          python -c "import app, inference_db, admin_auth; print('import smoke ok')"
+          python -c "import app, inference_db, admin_auth, create_admin_user; print('core import smoke ok')"
+          python -c "import admin_app, streamlit_app; print('streamlit import smoke ok')"
+
+      - name: No operational default credentials in tracked files
+        # Security regression gate for the removed built-in administrator. The
+        # sentinel is assembled at runtime so this workflow does not itself
+        # contain the literal it forbids.
+        run: |
+          FORBIDDEN="admin""12345"
+          if git grep -n --fixed-strings "$FORBIDDEN" -- . ':!tests/test_admin_security.py'; then
+            echo "::error::A removed default credential is present in a tracked file."
+            exit 1
+          fi
+          SEEDER="ensure_default""_admin"
+          if git grep -n --fixed-strings "$SEEDER" -- . ':!tests/test_admin_security.py'; then
+            echo "::error::Implicit administrator creation has returned."
+            exit 1
+          fi
+          if git ls-files --error-unmatch admin_users.json data/admin_users.json 2>/dev/null; then
+            echo "::error::A credential store is tracked in git."
+            exit 1
+          fi
+          echo "No default credentials, no implicit admin creation, no tracked credential store."
 
       - name: Repository must be clean after the run
         run: |
