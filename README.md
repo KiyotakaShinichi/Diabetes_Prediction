@@ -47,7 +47,9 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 
 ## Quick Start (Windows PowerShell)
 
-Canonical tested Python version: **3.11**.
+Canonical tested Python version: **3.11**. CI and the `Dockerfile` both use it,
+and the `Dockerfile` installs from `requirements.lock.txt` rather than the
+loose ranges, so the container matches the tested runtime exactly.
 
 The model bundles in `model_artifacts/` are pickles that record the library
 version that wrote them, so `requirements.txt` pins `scikit-learn==1.8.0` and
@@ -74,7 +76,7 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 Reproducible install - exact, fully pinned transitive dependency set:
 
 ```powershell
-python -m pip install -r requirements.lock.txt -r requirements-dev.txt
+python -m pip install -r requirements.lock.txt -r requirements-dev.lock.txt
 ```
 
 `requirements.lock.txt` is generated, not hand-edited. It is a *universal*
@@ -87,23 +89,53 @@ python -m pip install uv
 uv pip compile --universal --python-version 3.11 --output-file requirements.lock.txt requirements.txt
 ```
 
-Development and test tooling in `requirements-dev.txt` is deliberately left
-unpinned: none of it participates in model deserialisation, so it is free to
-float. To pin it as well - for example once a CI job needs byte-identical
-tooling - compile it against the production lock:
+Development and test tooling is locked the same way, constrained by the
+production lock so every shared transitive package resolves to the identical
+version. This is what CI installs. Regenerate it after changing
+`requirements-dev.txt`:
 
 ```powershell
 uv pip compile --universal --python-version 3.11 --constraint requirements.lock.txt --output-file requirements-dev.lock.txt requirements-dev.txt
 ```
 
-### 3. Run the test suite
+### 3. Run the test suite and linter
 
 The suite is self-contained: no network, no PostgreSQL, and no retraining. It
 uses a temporary SQLite database, so it never touches `data/`.
 
 ```powershell
 python -m pytest -q
+ruff check .
 ```
+
+`tests/test_artifact_compatibility.py` additionally proves the committed model
+bundles still load under the locked dependency set without raising
+`InconsistentVersionWarning` or XGBoost's model-format warning. It fails if a
+dependency bump makes an artifact incompatible, so the choice becomes explicit:
+revert the bump, or retrain and recommit the artifacts.
+
+`ruff check .` lints a **governed subset** of the repository - `app.py`,
+`inference_db.py`, `conftest.py` and `tests/`. The unmaintained training
+experiments are out of scope; `ruff.toml` records the exact boundary and why.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`,
+against the same canonical Python 3.11 and the same committed lockfiles:
+
+| Job | What it proves |
+| --- | --- |
+| Lint, tests and artifact compatibility | `ruff check .`, the full pytest suite, model artifacts load warning-free, `compileall` plus an import smoke, and the working tree is still clean afterwards |
+| Docker build and health smoke | the image builds, reports Python 3.11, answers `/health`, serves a real `/predict`, and logs no serialization-version warning |
+| Dependency vulnerability audit | `pip-audit` over both lockfiles |
+
+CI never contacts PostgreSQL or Neon: `DATABASE_URL` is forced empty so both the
+test suite and the container fall back to local SQLite.
+
+Dependency updates are proposed weekly by Dependabot
+(`.github/dependabot.yml`). Nothing auto-merges, and `scikit-learn` / `xgboost`
+are deliberately excluded because bumping either invalidates the committed
+model artifacts.
 
 ### 4. Train models
 

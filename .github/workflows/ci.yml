@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Single canonical runtime. Deliberately not a matrix: 3.11 is the only
+  # version the committed model artifacts have actually been verified against,
+  # and claiming untested versions pass would be dishonest.
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  test:
+    name: Lint, tests and artifact compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock.txt
+            requirements-dev.lock.txt
+
+      - name: Install reproducible dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock.txt
+          python -m pip install -r requirements-dev.lock.txt
+
+      - name: Report resolved runtime
+        run: |
+          python - <<'PY'
+          import sys
+          import joblib, numpy, pandas, scipy, shap, sklearn, xgboost
+          print("python  ", sys.version.split()[0])
+          for module in (sklearn, xgboost, numpy, scipy, pandas, joblib, shap):
+              print(f"{module.__name__:8s}", module.__version__)
+          PY
+
+      - name: Lint governed scope
+        # Scope and rule selection live in ruff.toml. `ruff check .` only visits
+        # the files listed there; the unmaintained training experiments are
+        # explicitly out of scope and documented as such.
+        run: ruff check .
+
+      - name: Verify committed model artifacts load under the lock
+        run: python -m pytest -q tests/test_artifact_compatibility.py
+
+      - name: Run test suite
+        env:
+          # Guarantee no test can reach a real database, even if a repository
+          # secret named DATABASE_URL is ever added.
+          DATABASE_URL: ""
+        run: python -m pytest -q
+
+      - name: Compile and import smoke
+        # admin_app.py and streamlit_app.py are intentionally NOT imported: both
+        # execute Streamlit UI at import time, and admin_app additionally calls
+        # ensure_default_admin(), which would write admin_users.json and dirty
+        # the tree. They are still byte-compiled by compileall below.
+        run: |
+          python -m compileall -q -x '\.(venv|git)' .
+          python -c "import app, inference_db, admin_auth; print('import smoke ok')"
+
+      - name: Repository must be clean after the run
+        run: |
+          git diff --exit-code
+          DIRTY="$(git status --porcelain)"
+          if [ -n "$DIRTY" ]; then
+            echo "::error::Working tree is dirty after tests. Generated files must be gitignored."
+            echo "$DIRTY"
+            exit 1
+          fi
+          echo "Working tree clean; ignored runtime output (__pycache__/, data/, .pytest_cache/) is expected."
+
+  docker:
+    name: Docker build and health smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --tag diabetes-api:ci .
+
+      - name: Confirm image runtime matches the canonical version
+        run: |
+          IMAGE_PY="$(docker run --rm diabetes-api:ci python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "image python: ${IMAGE_PY}, expected: ${PYTHON_VERSION}"
+          test "${IMAGE_PY}" = "${PYTHON_VERSION}"
+
+      - name: Start container
+        # DATABASE_URL is explicitly empty so the container falls back to local
+        # SQLite. CI must never depend on Neon or any external PostgreSQL.
+        run: |
+          docker run --detach --name diabetes-api \
+            --env DATABASE_URL= \
+            --publish 8000:8000 \
+            diabetes-api:ci
+
+      - name: Wait for /health
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error http://localhost:8000/health -o health.json; then
+              echo "healthy after ${attempt} attempt(s)"
+              cat health.json
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Container never became healthy"
+          docker logs diabetes-api || true
+          exit 1
+
+      - name: Assert health contract
+        run: |
+          python - <<'PY'
+          import json
+          body = json.load(open("health.json"))
+          assert body["status"] == "ok", body
+          assert body["model_bundle_exists"] is True, body
+          assert body["boosted_bundle_exists"] is True, body
+          print("health contract ok:", body)
+          PY
+
+      - name: Smoke a real prediction through the container
+        run: |
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data '{"GenHlth":3,"HighBP":1,"BMI":28.5,"HighChol":1,"Age":9,"DiffWalk":0,"HeartDiseaseorAttack":0,"PhysHlth":5,"Education":4,"PhysActivity":1}' \
+            http://localhost:8000/predict -o predict.json
+          python - <<'PY'
+          import json
+          body = json.load(open("predict.json"))
+          assert body["prediction"] in (0, 1), body
+          assert 0.0 <= body["probability"] <= 1.0, body
+          assert body["risk_category"] in ("HIGH", "LOW"), body
+          print("predict contract ok:", body["model_name"], body["probability"])
+          PY
+
+      - name: Container logs must show no serialization-version warning
+        run: |
+          docker logs diabetes-api > container.log 2>&1
+          cat container.log
+          if grep -Eq "InconsistentVersionWarning|older version of XGBoost" container.log; then
+            echo "::error::Container logged a model serialization-version warning"
+            exit 1
+          fi
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker logs diabetes-api || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force diabetes-api || true
+
+  audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: python -m pip install pip-audit
+
+      # Runs as its own job so a newly published advisory turns this red without
+      # masking a genuine lint or test failure. It is deliberately NOT set to
+      # continue-on-error: a vulnerable dependency should block and be triaged,
+      # not silently ignored. Both locks were clean when this workflow landed.
+      - name: Audit production lock
+        run: pip-audit --no-deps --requirement requirements.lock.txt
+
+      - name: Audit development lock
+        run: pip-audit --no-deps --requirement requirements-dev.lock.txt
