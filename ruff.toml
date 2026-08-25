@@ -16,7 +16,11 @@ line-length = 120
 include = [
     "app.py",
     "inference_db.py",
+    "admin_auth.py",
+    "create_admin_user.py",
+    "experiment_config.py",
     "conftest.py",
+    "ml_core/**/*.py",
     "tests/**/*.py",
     "tools/**/*.py",
 ]
