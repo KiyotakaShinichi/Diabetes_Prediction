@@ -26,7 +26,9 @@ def _use_postgres() -> bool:
     return url.startswith("postgresql://") or url.startswith("postgres://")
 
 
-def init_db(db_path: Path = DB_PATH) -> None:
+def init_db(db_path: Path | None = None) -> None:
+    db_path = DB_PATH if db_path is None else db_path
+
     if _use_postgres():
         import psycopg
 
@@ -89,8 +91,9 @@ def log_inference(
     prediction: int,
     threshold: float,
     payload: dict[str, Any],
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> None:
+    db_path = DB_PATH if db_path is None else db_path
     init_db(db_path)
 
     if _use_postgres():
@@ -148,7 +151,8 @@ def log_inference(
         )
 
 
-def fetch_recent_logs(limit: int = 100, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dict[str, Any]]:
+    db_path = DB_PATH if db_path is None else db_path
     init_db(db_path)
 
     if _use_postgres():

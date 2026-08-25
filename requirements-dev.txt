@@ -1,0 +1,5 @@
+# Development / CI dependencies. Install alongside requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8.3,<10
+httpx>=0.28,<1
+ruff>=0.13,<1
