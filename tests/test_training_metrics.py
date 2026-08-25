@@ -93,19 +93,21 @@ def test_both_training_modules_agree_on_the_youden_threshold():
     [np.full(6, 0.5), np.array([0.9, 0.8, 0.7, 0.3, 0.2, 0.1])],
     ids=["constant-scores", "inverted-scores"],
 )
-def test_youden_threshold_degenerates_to_infinity_for_useless_scores(training, y_proba):
-    """Known sharp edge, pinned rather than papered over.
+def test_youden_threshold_stays_finite_for_useless_scores(training, y_proba):
+    """The sharp edge this file used to pin is now fixed.
 
-    When no cut-point achieves TPR > FPR, ``np.argmax`` lands on the synthetic
-    ``inf`` entry that ``sklearn.metrics.roc_curve`` prepends, so the helper
-    returns ``inf`` - a threshold that would classify everything as negative.
-    Real training never hits this (the shipped thresholds are ~0.46 / ~0.52),
-    but the behaviour is undefended and this test will fail loudly the moment
-    someone fixes it, which is the point.
+    Previously these inputs returned ``inf`` - the synthetic threshold
+    ``roc_curve`` prepends - which would have classified every patient as
+    negative. Both pipelines now delegate to ml_core.compute_youden_threshold,
+    which considers only finite candidates. See tests/test_ml_core.py for the
+    full contract and the old/new equivalence proof.
     """
     y_true = np.array([0, 0, 0, 1, 1, 1])
 
-    assert not np.isfinite(training.compute_youden_threshold(y_true, y_proba))
+    threshold = training.compute_youden_threshold(y_true, y_proba)
+
+    assert np.isfinite(threshold)
+    assert 0.0 <= threshold <= 1.0
 
 
 # ------------------------------------------------------- evaluate_predictions

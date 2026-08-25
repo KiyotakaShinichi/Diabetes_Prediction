@@ -49,7 +49,7 @@ LEGACY_PBKDF2_ITERATIONS = 120_000
 #: Pre-existing repository rule, preserved rather than invented.
 MIN_PASSWORD_LENGTH = 8
 
-ENV_USERNAME = "ADMIN_USERNAME"  # noqa: S105 - variable name, not a secret
+ENV_USERNAME = "ADMIN_USERNAME"
 ENV_PASSWORD = "ADMIN_PASSWORD"  # noqa: S105 - variable name, not a secret
 
 #: Salt used only to burn a comparable amount of time on a failed lookup, so an

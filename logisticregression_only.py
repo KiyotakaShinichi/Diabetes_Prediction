@@ -28,16 +28,14 @@ from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
     brier_score_loss,
-    confusion_matrix,
     classification_report,
-    cohen_kappa_score,
-    matthews_corrcoef,
-    roc_curve,
+)
+
+from ml_core import (
+    bootstrap_confidence_interval,
+    compute_youden_threshold,
+    evaluate_predictions,
 )
 
 warnings.filterwarnings("ignore")
@@ -100,78 +98,6 @@ FEATURE_LABELS = {
     "Education": "Education Level (1-6)",
     "PhysActivity": "Is Physically Active",
 }
-
-
-def compute_youden_threshold(y_true: np.ndarray, y_proba: np.ndarray) -> float:
-    """
-    Compute optimal threshold using Youden's J statistic.
-    J = Sensitivity + Specificity - 1 = TPR - FPR
-    Returns threshold that maximizes J.
-    """
-    fpr, tpr, thresholds = roc_curve(y_true, y_proba)
-    youden_j = tpr - fpr
-    best_idx = int(np.argmax(youden_j))
-    return float(thresholds[best_idx])
-
-
-def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray) -> dict:
-    """Compute comprehensive evaluation metrics."""
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(roc_auc_score(y_true, y_proba)),
-        "brier_score": float(brier_score_loss(y_true, y_proba)),
-        "cohen_kappa": float(cohen_kappa_score(y_true, y_pred)),
-        "mcc": float(matthews_corrcoef(y_true, y_pred)),
-        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
-    }
-
-
-def bootstrap_confidence_interval(
-    y_true: np.ndarray,
-    y_proba: np.ndarray,
-    threshold: float,
-    n_bootstrap: int = N_BOOTSTRAP,
-    alpha: float = 0.05,
-    seed: int = RANDOM_STATE,
-) -> dict:
-    """
-    Bootstrap 95% confidence intervals for key metrics.
-    Resamples test set with replacement and computes metric distribution.
-    """
-    rng = np.random.RandomState(seed)
-    n = len(y_true)
-    metrics_boot: dict[str, list[float]] = {
-        "accuracy": [], "precision": [], "recall": [],
-        "f1": [], "roc_auc": [], "brier_score": [],
-    }
-
-    for _ in range(n_bootstrap):
-        idx = rng.choice(n, size=n, replace=True)
-        y_t = y_true[idx]
-        y_p = y_proba[idx]
-        y_pred = (y_p >= threshold).astype(int)
-
-        # Skip degenerate samples (single class)
-        if len(np.unique(y_t)) < 2:
-            continue
-
-        metrics_boot["accuracy"].append(float(accuracy_score(y_t, y_pred)))
-        metrics_boot["precision"].append(float(precision_score(y_t, y_pred, zero_division=0)))
-        metrics_boot["recall"].append(float(recall_score(y_t, y_pred, zero_division=0)))
-        metrics_boot["f1"].append(float(f1_score(y_t, y_pred, zero_division=0)))
-        metrics_boot["roc_auc"].append(float(roc_auc_score(y_t, y_p)))
-        metrics_boot["brier_score"].append(float(brier_score_loss(y_t, y_p)))
-
-    result = {}
-    for metric, values in metrics_boot.items():
-        arr = np.array(values)
-        lo = float(np.percentile(arr, 100 * alpha / 2))
-        hi = float(np.percentile(arr, 100 * (1 - alpha / 2)))
-        result[metric] = {"mean": float(arr.mean()), "ci_lower": lo, "ci_upper": hi}
-    return result
 
 
 def compute_drift_baseline(X_train: pd.DataFrame) -> dict:
@@ -549,7 +475,5 @@ if __name__ == "__main__":
     SHAP_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
     DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "drift_baseline.pkl"
     main()
-
-
 
 
