@@ -258,10 +258,10 @@ def test_predict_works_from_a_foreign_cwd(client, valid_payload, foreign_cwd, is
 
 
 def test_admin_users_path_is_project_anchored_from_a_foreign_cwd(foreign_cwd):
-    """Path resolution only. Credential semantics are the security track's work."""
+    """The runtime credential store resolves from the project, not the cwd."""
     import admin_auth
 
-    assert admin_auth.USERS_PATH == REPO_ROOT / "admin_users.json"
+    assert admin_auth.USERS_PATH == REPO_ROOT / "data" / "admin_users.json"
     assert admin_auth.USERS_PATH.is_absolute()
 
 

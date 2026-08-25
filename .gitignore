@@ -6,6 +6,11 @@ inference_log.db
 _test_*.py
 data/
 
+# Admin credential store. The runtime location is data/admin_users.json (data/
+# is already ignored above); /admin_users.json is the pre-Track-E location and
+# is ignored so a stale local copy cannot be re-committed.
+/admin_users.json
+
 # Local environment files (never commit real secrets). .env.example is tracked.
 .env
 .env.*
