@@ -49,7 +49,8 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 
 ## Quick Start (Windows PowerShell)
 
-Canonical tested Python version: **3.11**. CI and the `Dockerfile` both use it,
+Canonical tested Python version: **3.11** (verified on **3.11.16**). CI, the
+`Dockerfile`, `render.yaml` and the devcontainer all use it,
 and the `Dockerfile` installs from `requirements.lock` rather than the
 loose ranges, so the container matches the tested runtime exactly.
 
@@ -100,7 +101,22 @@ version. This is what CI installs. Regenerate it after changing
 uv pip compile --universal --python-version 3.11 --constraint requirements.lock --output-file requirements-dev.lock requirements-dev.txt
 ```
 
-### 3. Run the test suite and linter
+### 3. Configure the environment (optional for local use)
+
+```powershell
+Copy-Item .env.example .env
+```
+
+`.env.example` documents every variable the code actually reads:
+`DATABASE_URL` (leave empty for local SQLite), plus `ADMIN_USERNAME` and
+`ADMIN_PASSWORD` for seeding the admin dashboard. Nothing auto-loads `.env` -
+export the variables or pass them to Docker/Render. `.env` is gitignored;
+`.env.example` contains placeholders only and no real credentials.
+
+Admin authentication has **not** been hardened yet - if the admin variables are
+unset, the code still falls back to a built-in default account. Set them.
+
+### 4. Run the test suite and linter
 
 The suite is self-contained: no network, no PostgreSQL, and no retraining. It
 uses a temporary SQLite database, so it never touches `data/`.
@@ -134,12 +150,17 @@ against the same canonical Python 3.11 and the same committed lockfiles:
 CI never contacts PostgreSQL or Neon: `DATABASE_URL` is forced empty so both the
 test suite and the container fall back to local SQLite.
 
+`render.yaml` pins `PYTHON_VERSION: "3.11.16"` and builds with
+`pip install -r requirements.lock`, and the devcontainer installs the same
+locks, so every deployment surface matches the tested runtime.
+`tests/test_config_contracts.py` parses those files and fails if one drifts.
+
 Dependency updates are proposed weekly by Dependabot
 (`.github/dependabot.yml`). Nothing auto-merges, and `scikit-learn` / `xgboost`
 are deliberately excluded because bumping either invalidates the committed
 model artifacts.
 
-### 4. Train models
+### 5. Train models
 
 ```powershell
 # Variant A (required)
@@ -148,6 +169,31 @@ python logisticregression_only.py
 # Variant B (optional, enables full A/B testing)
 python boostedtrees_ab.py
 ```
+
+Both read the committed `cleaned_data.csv` and write to `model_artifacts/`,
+resolved from the project directory - so these commands work from any working
+directory, on any machine. Override either location explicitly:
+
+```powershell
+python logisticregression_only.py --data-path D:/data/my_cohort.csv --artifacts-dir D:/artifacts
+python logisticregression_only.py --help
+```
+
+The archived single-model experiments (`qsvm.py`, `xgboost_only.py`,
+`logreg+clustering.py` and others) take the same `--data-path` and a
+`--results-dir`, and `--help` works without installing their optional
+plotting/clustering dependencies:
+
+```powershell
+python qsvm.py --help
+python qsvm.py --data-path C:/path/to/cleaned_data_upd.csv --results-dir ./out
+```
+
+They expect `cleaned_data_upd.csv`, a renamed variant with the target column
+`DiabetesStatus`, which is **not committed** - the repository ships
+`cleaned_data.csv` (target `Diabetes_binary`) instead. The two schemas are not
+interchangeable, so supply your own copy with `--data-path`. Results default to
+the gitignored `experiment_results/`.
 
 Expected key outputs in `model_artifacts/`:
 
@@ -163,7 +209,7 @@ Optional variant B outputs:
 - `boosted_shap_explainer.pkl`
 - `boosted_drift_baseline.pkl`
 
-### 5. Run services
+### 6. Run services
 
 Use separate terminals:
 
