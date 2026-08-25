@@ -6,15 +6,22 @@ confidence intervals, and drift monitoring.
 Run with: uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
 import hashlib
+import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from inference_db import fetch_recent_logs, init_db, log_inference
+
+logger = logging.getLogger("diabetes_api")
 
 # Resolve packaged resources from the project directory, never from the caller's
 # working directory, so the service behaves identically wherever it is launched.
@@ -69,35 +76,181 @@ class DiabetesFeatures(BaseModel):
     PhysActivity: int = Field(..., ge=0, le=1, description="Physical activity (0=No, 1=Yes)")
 
 
+class ServiceError(Exception):
+    """Base for deliberate serving failures with a client-safe mapping."""
+
+    status_code = 500
+    client_detail = "Internal error. Contact the service operator with the request id."
+
+
+class ArtifactUnavailableError(ServiceError):
+    """A required serving artifact is missing or cannot be loaded.
+
+    Mapped to 503: the process is alive but cannot serve predictions, which is
+    what a load balancer or orchestrator needs to know.
+    """
+
+    status_code = 503
+    client_detail = "Model artifact unavailable. The service cannot serve predictions."
+
+
+class InferenceError(ServiceError):
+    """Scoring failed after the model was successfully loaded."""
+
+    status_code = 500
+    client_detail = "Inference failed. Contact the service operator with the request id."
+
+
+@lru_cache(maxsize=8)
+def _load_bundle_cached(path_str: str, _mtime_ns: int, _size: int) -> dict:
+    """Deserialize a bundle once per (path, mtime, size).
+
+    Keyed on the file's stat so a replaced artifact is picked up without a
+    restart, while readiness probes and repeated predictions do not
+    re-deserialize the pickle every call.
+    """
+    return joblib.load(Path(path_str))
+
+
+def load_model_bundle(path: Path) -> dict:
+    """Load a model bundle, raising a deliberate ArtifactUnavailableError."""
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ArtifactUnavailableError(f"artifact not readable at {path}") from exc
+    try:
+        return _load_bundle_cached(str(path), stat.st_mtime_ns, stat.st_size)
+    except Exception as exc:
+        # joblib/pickle raise a wide range of types for a truncated or
+        # version-incompatible artifact; all of them mean the same thing here.
+        raise ArtifactUnavailableError(f"artifact at {path} could not be deserialized") from exc
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Application lifespan: prepare the inference log schema on startup.
+
+    Replaces the deprecated startup event hook. Importing this module
+    performs no database work; initialisation happens only when the application
+    actually starts.
+    """
+    logger.info("Starting API.", extra={"event": "startup.begin"})
+    init_db()
+    logger.info(
+        "Inference log schema ready.",
+        extra={"event": "startup.complete", "artifacts_dir": str(ARTIFACTS_DIR)},
+    )
+    yield
+    logger.info("Shutting down API.", extra={"event": "shutdown"})
+
+
 app = FastAPI(
     title="Diabetes Risk Assessment API",
     description="Clinical decision support API for diabetes risk prediction",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 
-def load_model_bundle(path: Path) -> dict:
-    """Load model bundle from disk."""
-    if not path.exists():
-        raise FileNotFoundError(f"Model bundle not found at {path}")
-    return joblib.load(path)
+@app.exception_handler(ServiceError)
+async def _service_error_handler(request: Request, exc: ServiceError) -> JSONResponse:
+    """Log the real cause server-side; return a sanitized body to the client.
 
-
-@app.on_event("startup")
-def startup_event() -> None:
-    """Initialize database on startup."""
-    init_db()
+    The client never receives repr(exc), a traceback, a filesystem path, a
+    database credential or raw SQL error text - only a stable message and the
+    request id needed to correlate with the server log.
+    """
+    request_id = str(uuid.uuid4())
+    logger.exception(
+        "Request failed: %s", type(exc).__name__,
+        extra={
+            "event": "request.failed",
+            "request_id": request_id,
+            "path": request.url.path,
+            "error_type": type(exc).__name__,
+            "status_code": exc.status_code,
+        },
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.client_detail, "request_id": request_id},
+    )
 
 
 @app.get("/health")
 def health() -> dict:
-    """Health check endpoint."""
+    """Liveness probe: is the process up?
+
+    Deliberately cheap and always 200 while the process can answer. It mutates
+    nothing, loads nothing and never fails on a dependency - use /ready to
+    decide whether to send traffic. The response schema is unchanged.
+    """
     return {
         "status": "ok",
         "service": "Diabetes Risk Assessment API",
         "model_bundle_exists": MODEL_BUNDLE_PATH.exists(),
         "boosted_bundle_exists": BOOSTED_BUNDLE_PATH.exists(),
     }
+
+
+def _check_artifact(name: str, path: Path) -> dict:
+    """Confirm one artifact actually deserializes. Cached, so probes are cheap.
+
+    Reports a logical name and a coarse reason - never the artifact path, which
+    a readiness probe has no business exposing.
+    """
+    try:
+        load_model_bundle(path)
+    except ArtifactUnavailableError:
+        return {"name": name, "ok": False, "reason": "unavailable"}
+    return {"name": name, "ok": True}
+
+
+@app.get("/ready")
+def ready(response: Response) -> dict:
+    """Readiness probe: can this instance actually serve predictions?
+
+    Checks that the primary model bundle deserializes and that the configured
+    inference log is reachable. The database check runs against whatever is
+    configured - with no DATABASE_URL that is local SQLite, so readiness never
+    depends on an external PostgreSQL when local storage is a valid runtime.
+
+    200 when predictions can be served, 503 otherwise. Reasons are coarse
+    labels, never internal paths or driver error text.
+    """
+    checks: list[dict] = [_check_artifact("primary_model", MODEL_BUNDLE_PATH)]
+
+    boosted = _check_artifact("boosted_model", BOOSTED_BUNDLE_PATH)
+    # Variant B is optional: /predict already falls back to A when it is absent,
+    # so it must not gate readiness.
+    boosted["required"] = False
+    checks.append(boosted)
+
+    try:
+        init_db()
+        checks.append({"name": "inference_log", "ok": True})
+    except Exception:
+        logger.warning(
+            "Readiness check could not reach the inference log.",
+            exc_info=True,
+            extra={"event": "ready.dependency_unavailable", "dependency": "inference_log"},
+        )
+        checks.append({"name": "inference_log", "ok": False, "reason": "unavailable"})
+
+    required_failed = [c for c in checks if not c["ok"] and c.get("required", True) is not False]
+    is_ready = not required_failed
+
+    if not is_ready:
+        response.status_code = 503
+        logger.error(
+            "Service is not ready.",
+            extra={
+                "event": "ready.not_ready",
+                "failed": [c["name"] for c in required_failed],
+            },
+        )
+
+    return {"status": "ready" if is_ready else "not_ready", "checks": checks}
 
 
 @app.post("/predict")
@@ -129,36 +282,67 @@ def predict(
         bundle_path = MODEL_BUNDLE_PATH
         fallback_used = True
 
-    # Load model
+    request_id = str(uuid.uuid4())
+
+    # Load model. load_model_bundle raises ArtifactUnavailableError (-> 503) and
+    # the handler logs the real cause; the client never sees the artifact path.
+    bundle = load_model_bundle(bundle_path)
     try:
-        bundle = load_model_bundle(bundle_path)
         pipeline = bundle["pipeline"]
         threshold = float(bundle["threshold"])
         feature_columns = bundle["feature_columns"]
         model_name = bundle.get("model_name", "logistic_regression")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Model load failed: {exc}") from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactUnavailableError(f"bundle at {bundle_path} is missing required keys") from exc
 
-    # Prepare input
+    # Score. Anything that goes wrong here is an inference failure, not a
+    # validation problem: the payload already passed Pydantic.
     payload_dict = payload.model_dump()
-    input_df = pd.DataFrame([payload_dict])
-    input_df = input_df[feature_columns]
+    try:
+        input_df = pd.DataFrame([payload_dict])[feature_columns]
+        probability = float(pipeline.predict_proba(input_df)[:, 1][0])
+    except Exception as exc:
+        raise InferenceError(f"scoring failed for variant {selected_variant}") from exc
 
-    # Predict
-    probability = float(pipeline.predict_proba(input_df)[:, 1][0])
     prediction = int(probability >= threshold)
-    request_id = str(uuid.uuid4())
 
-    # Log inference
-    log_inference(
-        request_id=request_id,
-        model_variant=selected_variant,
-        model_name=model_name,
-        probability=probability,
-        prediction=prediction,
-        threshold=threshold,
-        payload=payload_dict,
-    )
+    # Persist telemetry. This is analytics, not an audit record: streamlit_app.py
+    # already states that logging must never break the user-facing result, and
+    # the store is disposable gitignored runtime state. A write failure is
+    # therefore degraded and logged, never allowed to discard a valid score.
+    try:
+        log_inference(
+            request_id=request_id,
+            model_variant=selected_variant,
+            model_name=model_name,
+            probability=probability,
+            prediction=prediction,
+            threshold=threshold,
+            payload=payload_dict,
+        )
+    except Exception:
+        logger.warning(
+            "Inference telemetry could not be persisted; returning the prediction anyway.",
+            exc_info=True,
+            extra={
+                "event": "inference.persist_failed",
+                "request_id": request_id,
+                "model_variant": selected_variant,
+                "model_name": model_name,
+            },
+        )
+    else:
+        logger.info(
+            "Inference served.",
+            extra={
+                "event": "inference.served",
+                "request_id": request_id,
+                "model_variant": selected_variant,
+                "model_name": model_name,
+                "prediction": prediction,
+                "fallback_to_a": fallback_used,
+            },
+        )
 
     return {
         "request_id": request_id,
@@ -196,12 +380,16 @@ def explain(
 
     try:
         shap_bundle = joblib.load(shap_path)
-        model_bundle = load_model_bundle(bundle_path)
+    except Exception as exc:
+        raise ArtifactUnavailableError(f"SHAP explainer at {shap_path} is unreadable") from exc
+
+    model_bundle = load_model_bundle(bundle_path)
+    try:
         pipeline = model_bundle["pipeline"]
         threshold = float(model_bundle["threshold"])
         feature_columns = model_bundle["feature_columns"]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Load error: {exc}") from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactUnavailableError(f"bundle at {bundle_path} is missing required keys") from exc
 
     payload_dict = payload.model_dump()
     input_df = pd.DataFrame([payload_dict])[feature_columns]
@@ -254,7 +442,11 @@ def drift_check(
     if not drift_path.exists():
         raise HTTPException(status_code=404, detail=f"Drift baseline not found for variant {variant}")
 
-    baseline = joblib.load(drift_path)
+    try:
+        baseline = joblib.load(drift_path)
+    except Exception as exc:
+        raise ArtifactUnavailableError(f"drift baseline at {drift_path} is unreadable") from exc
+
     payload_dict = payload.model_dump()
 
     # Handle two baseline formats:
@@ -307,8 +499,32 @@ def get_drift_baseline(model_variant: str = "A") -> dict:
     drift_path = DRIFT_BASELINE_A if variant == "A" else DRIFT_BASELINE_B
     if not drift_path.exists():
         raise HTTPException(status_code=404, detail="Drift baseline not found")
-    baseline = joblib.load(drift_path)
+    try:
+        baseline = joblib.load(drift_path)
+    except Exception as exc:
+        raise ArtifactUnavailableError(f"drift baseline at {drift_path} is unreadable") from exc
+
     return {"model_variant": variant, "baseline": baseline}
+
+
+class LogStoreUnavailableError(ServiceError):
+    """The inference log could not be read."""
+
+    status_code = 503
+    client_detail = "Inference log unavailable. Analytics cannot be served right now."
+
+
+def _read_logs(limit: int) -> list[dict]:
+    """Read recent inference logs, mapping a store failure to a safe 503.
+
+    Raw driver text - which can carry a connection string, host or SQL - must
+    never reach the client, so the real error is logged by the ServiceError
+    handler and the client gets a fixed message plus a request id.
+    """
+    try:
+        return fetch_recent_logs(limit=limit)
+    except Exception as exc:
+        raise LogStoreUnavailableError("inference log read failed") from exc
 
 
 @app.get("/inference-logs")
@@ -320,7 +536,7 @@ def inference_logs(limit: int = 100) -> dict:
     - limit: Maximum number of logs to return (1-1000)
     """
     safe_limit = max(1, min(limit, 1000))
-    rows = fetch_recent_logs(limit=safe_limit)
+    rows = _read_logs(safe_limit)
     return {"count": len(rows), "logs": rows}
 
 
@@ -333,7 +549,7 @@ def analytics_summary(limit: int = 1000) -> dict:
     - limit: Number of recent logs to aggregate (1-10000)
     """
     safe_limit = max(1, min(limit, 10000))
-    rows = fetch_recent_logs(limit=safe_limit)
+    rows = _read_logs(safe_limit)
 
     if not rows:
         return {
