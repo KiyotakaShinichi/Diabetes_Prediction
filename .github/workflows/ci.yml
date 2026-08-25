@@ -164,6 +164,20 @@ jobs:
           print("health contract ok:", body)
           PY
 
+      - name: Assert the container reports readiness
+        run: |
+          curl --fail --silent --show-error http://localhost:8000/ready -o ready.json
+          cat ready.json
+          python - <<'PY'
+          import json
+          body = json.load(open("ready.json"))
+          assert body["status"] == "ready", body
+          names = {c["name"] for c in body["checks"]}
+          assert {"primary_model", "inference_log"} <= names, body
+          assert all(c["ok"] for c in body["checks"] if c.get("required", True) is not False), body
+          print("readiness contract ok:", body["status"])
+          PY
+
       - name: Smoke a real prediction through the container
         run: |
           curl --fail --silent --show-error \

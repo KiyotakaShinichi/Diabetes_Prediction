@@ -228,7 +228,8 @@ streamlit run admin_app.py --server.port 8502
 
 Base URL: `http://localhost:8000`
 
-- `GET /health`: Service and model availability status
+- `GET /health`: Liveness - is the process up?
+- `GET /ready`: Readiness - can this instance actually serve predictions?
 - `POST /predict`: Risk prediction
 - `POST /explain`: SHAP feature contributions for one prediction
 - `POST /drift-check`: Per-feature z-score drift check for one payload
@@ -239,6 +240,59 @@ Base URL: `http://localhost:8000`
 Interactive docs:
 
 - `http://localhost:8000/docs`
+
+### Probes
+
+`/health` is a **liveness** probe: cheap, always `200` while the process can
+answer, mutates nothing and loads nothing. It never fails because a dependency
+is down, so it is not a signal about whether to send traffic. Its response
+schema is unchanged.
+
+`/ready` is a **readiness** probe: it confirms the primary model bundle actually
+deserializes and that the configured inference log is reachable, then returns
+`200` with `{"status": "ready", "checks": [...]}` or `503` with
+`{"status": "not_ready", ...}`.
+
+- Variant B is optional - `/predict` already falls back to variant A when the
+  boosted bundle is absent - so a missing variant B does not make the service
+  unready.
+- The database check runs against whatever is configured. With no
+  `DATABASE_URL` that is local SQLite, so readiness never depends on an
+  external PostgreSQL when local storage is a valid runtime.
+- Bundles are cached by `(path, mtime, size)`, so probes reuse the loaded model
+  rather than re-deserializing the pickle on every call, and a replaced
+  artifact is still picked up without a restart.
+
+### Errors and logging
+
+Failures are mapped deliberately rather than collapsing into a generic 500:
+
+| Situation | Status |
+| --- | --- |
+| Invalid feature values or missing fields | `422` (Pydantic) |
+| Unknown `model_variant` selector | `400` |
+| A required model artifact is missing or unreadable | `503` |
+| The inference log cannot be read | `503` |
+| Scoring itself fails unexpectedly | `500` |
+
+Error bodies are sanitized: they carry a fixed message and a `request_id`,
+never `repr(exc)`, a traceback, a filesystem path, a database credential or raw
+SQL text. The real cause - including the traceback - is logged server-side
+against the same `request_id`, so an operator can correlate a client report
+with the exact failure.
+
+Operational logging uses the Python standard library only; **no external
+error-tracking provider is required or integrated**. Events carry structured
+context via `extra=` (`event`, `request_id`, `model_variant`, `model_name`), so
+a prediction can be correlated across its response, its stored row and the log
+line. Clinical feature payloads are deliberately not logged.
+
+**Telemetry failure policy**: inference logging is analytics, not an audit
+record. If the model scores successfully but the log write fails, the
+prediction is still returned and the failure is logged at `WARNING`. This
+matches the behaviour `streamlit_app.py` already documented - logging must
+never break the user-facing result - and the store is disposable, gitignored
+runtime state.
 
 ### Example prediction request
 
