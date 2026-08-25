@@ -1,0 +1,37 @@
+version: 2
+
+updates:
+  # Python dependencies. Dependabot opens pull requests only - nothing is
+  # auto-merged, because a scikit-learn or xgboost bump invalidates the
+  # committed model artifacts in model_artifacts/ and must be reviewed against
+  # tests/test_artifact_compatibility.py before it can be accepted.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      # Pinned to the versions that wrote the committed pickles:
+      #   model_bundle.pkl / boosted_model_bundle.pkl / shap_explainer.pkl carry
+      #   _sklearn_version 1.8.0, and the pickled booster records UBJSON
+      #   version [3, 0, 4]. Bumping either requires retraining, so Dependabot
+      #   must not propose it as a routine update. Remove these entries as part
+      #   of a deliberate retraining task.
+      - dependency-name: scikit-learn
+      - dependency-name: xgboost
+
+  # Keep the workflow's own actions current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: ci
