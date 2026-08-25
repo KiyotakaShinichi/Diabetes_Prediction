@@ -174,7 +174,7 @@ scikit-learn==1.8.0
     # via
     #   -r requirements.txt
     #   shap
-scipy==1.17.1
+scipy==1.18.1
     # via
     #   scikit-learn
     #   shap
