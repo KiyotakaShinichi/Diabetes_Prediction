@@ -11,8 +11,8 @@ WORKDIR /app
 # the image gets scikit-learn 1.8.0 / xgboost 3.0.4 and loads model_artifacts/
 # without serialization-version warnings. Dev and test dependencies are
 # deliberately not installed into the runtime image.
-COPY requirements.lock.txt ./
-RUN pip install --no-cache-dir -r requirements.lock.txt
+COPY requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
 

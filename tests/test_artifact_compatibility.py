@@ -180,8 +180,8 @@ def test_drift_baseline_endpoint_returns_every_feature(client):
 
 
 def test_lockfile_pins_every_requirement_exactly():
-    """requirements.lock.txt is the reproducible install; no floating entries."""
-    lock = (REPO_ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
+    """requirements.lock is the reproducible install; no floating entries."""
+    lock = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
     floating = [
         line for line in lock.splitlines()
         if line and not line.startswith(("#", " ", "\t")) and "==" not in line
@@ -190,11 +190,11 @@ def test_lockfile_pins_every_requirement_exactly():
 
 
 def test_lockfile_agrees_with_the_artifact_pins():
-    lock = (REPO_ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
+    lock = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
     for package in ("scikit-learn", "xgboost"):
         pin = _pinned_version(package)
         assert re.search(rf"^{re.escape(package)}=={re.escape(pin)}(\s|$|;)", lock, re.MULTILINE), (
-            f"requirements.lock.txt does not pin {package}=={pin}"
+            f"requirements.lock does not pin {package}=={pin}"
         )
 
 

@@ -48,7 +48,7 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 ## Quick Start (Windows PowerShell)
 
 Canonical tested Python version: **3.11**. CI and the `Dockerfile` both use it,
-and the `Dockerfile` installs from `requirements.lock.txt` rather than the
+and the `Dockerfile` installs from `requirements.lock` rather than the
 loose ranges, so the container matches the tested runtime exactly.
 
 The model bundles in `model_artifacts/` are pickles that record the library
@@ -76,17 +76,17 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 Reproducible install - exact, fully pinned transitive dependency set:
 
 ```powershell
-python -m pip install -r requirements.lock.txt -r requirements-dev.lock.txt
+python -m pip install -r requirements.lock -r requirements-dev.lock
 ```
 
-`requirements.lock.txt` is generated, not hand-edited. It is a *universal*
+`requirements.lock` is generated, not hand-edited. It is a *universal*
 lock: it carries environment markers, so one file installs correctly on
 Windows, on Linux (the Dockerfile target) and on macOS. Regenerate it after
 any change to `requirements.txt`:
 
 ```powershell
 python -m pip install uv
-uv pip compile --universal --python-version 3.11 --output-file requirements.lock.txt requirements.txt
+uv pip compile --universal --python-version 3.11 --output-file requirements.lock requirements.txt
 ```
 
 Development and test tooling is locked the same way, constrained by the
@@ -95,7 +95,7 @@ version. This is what CI installs. Regenerate it after changing
 `requirements-dev.txt`:
 
 ```powershell
-uv pip compile --universal --python-version 3.11 --constraint requirements.lock.txt --output-file requirements-dev.lock.txt requirements-dev.txt
+uv pip compile --universal --python-version 3.11 --constraint requirements.lock --output-file requirements-dev.lock requirements-dev.txt
 ```
 
 ### 3. Run the test suite and linter

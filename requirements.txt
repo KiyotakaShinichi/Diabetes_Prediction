@@ -1,5 +1,5 @@
 # Human-maintainable source requirements.
-# For a byte-reproducible install use requirements.lock.txt instead (see README).
+# For a byte-reproducible install use requirements.lock instead (see README).
 #
 # scikit-learn and xgboost are pinned exactly because the committed artifacts in
 # model_artifacts/ are pickles that record the version that wrote them:

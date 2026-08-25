@@ -1,10 +1,28 @@
 version: 2
 
 updates:
-  # Python dependencies. Dependabot opens pull requests only - nothing is
-  # auto-merged, because a scikit-learn or xgboost bump invalidates the
-  # committed model artifacts in model_artifacts/ and must be reviewed against
-  # tests/test_artifact_compatibility.py before it can be accepted.
+  # Python dependencies.
+  #
+  # Dependabot deliberately sees ONLY the human-maintained source files,
+  # requirements.txt and requirements-dev.txt. The generated lockfiles are named
+  # requirements.lock and requirements-dev.lock (no .txt) precisely so that
+  # Dependabot's pip file matcher, which looks for *requirements*.txt and .in,
+  # cannot pick them up.
+  #
+  # This is not cosmetic. Dependabot's pip updater rewrites a single pin without
+  # re-running a resolver, and a uv-compiled lock is a fully resolved set, so a
+  # one-line bump produces an unsatisfiable install. Verified on this repository:
+  # of the five pip pull requests opened against the lock on the first run, four
+  # failed at `pip install -r <lock>` - most clearly pydantic-core, which
+  # pydantic pins exactly.
+  #
+  # Lock updates are therefore a deliberate step: bump the range in the source
+  # file, then regenerate with `uv pip compile` (see README). Freshness and
+  # safety are still covered - the CI audit job runs pip-audit over both locks,
+  # and tests/test_artifact_compatibility.py fails any bump that breaks the
+  # committed model artifacts.
+  #
+  # Pull requests only; nothing is auto-merged.
   - package-ecosystem: pip
     directory: "/"
     schedule:
@@ -17,11 +35,11 @@ updates:
       include: scope
     ignore:
       # Pinned to the versions that wrote the committed pickles:
-      #   model_bundle.pkl / boosted_model_bundle.pkl / shap_explainer.pkl carry
-      #   _sklearn_version 1.8.0, and the pickled booster records UBJSON
-      #   version [3, 0, 4]. Bumping either requires retraining, so Dependabot
-      #   must not propose it as a routine update. Remove these entries as part
-      #   of a deliberate retraining task.
+      # model_bundle.pkl / boosted_model_bundle.pkl / shap_explainer.pkl carry
+      # _sklearn_version 1.8.0, and the pickled booster records UBJSON version
+      # [3, 0, 4]. Bumping either invalidates model_artifacts/ and requires
+      # retraining, so it must not arrive as a routine dependency PR. Remove
+      # these entries as part of a deliberate retraining task.
       - dependency-name: scikit-learn
       - dependency-name: xgboost
 

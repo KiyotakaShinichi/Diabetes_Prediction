@@ -34,14 +34,14 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: |
-            requirements.lock.txt
-            requirements-dev.lock.txt
+            requirements.lock
+            requirements-dev.lock
 
       - name: Install reproducible dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.lock.txt
-          python -m pip install -r requirements-dev.lock.txt
+          python -m pip install -r requirements.lock
+          python -m pip install -r requirements-dev.lock
 
       - name: Report resolved runtime
         run: |
@@ -191,7 +191,7 @@ jobs:
       # continue-on-error: a vulnerable dependency should block and be triaged,
       # not silently ignored. Both locks were clean when this workflow landed.
       - name: Audit production lock
-        run: pip-audit --no-deps --requirement requirements.lock.txt
+        run: pip-audit --no-deps --requirement requirements.lock
 
       - name: Audit development lock
-        run: pip-audit --no-deps --requirement requirements-dev.lock.txt
+        run: pip-audit --no-deps --requirement requirements-dev.lock
