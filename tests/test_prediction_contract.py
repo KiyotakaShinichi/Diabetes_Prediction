@@ -10,7 +10,7 @@ import sqlite3
 import pytest
 
 from app import choose_variant
-from conftest import TRACKED_DB_PATH, VALID_PAYLOAD, payload_with
+from conftest import REPO_DATA_DIR, VALID_PAYLOAD, payload_with
 
 EXPECTED_PREDICT_KEYS = {
     "request_id",
@@ -152,12 +152,28 @@ def test_logged_inference_round_trips_through_the_logs_endpoint(client, valid_pa
     assert entry["payload"] == valid_payload
 
 
-def test_predict_does_not_touch_the_tracked_repository_database(client, valid_payload):
-    before = TRACKED_DB_PATH.read_bytes()
+def _repo_data_snapshot() -> dict[str, str] | None:
+    """Hash every file in the repo's data/ dir, or None when it does not exist."""
+    if not REPO_DATA_DIR.is_dir():
+        return None
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(REPO_DATA_DIR.iterdir())
+        if path.is_file()
+    }
+
+
+def test_predict_does_not_touch_the_repository_data_directory(client, valid_payload):
+    """Inference logging is redirected to tmp_path, so data/ must be untouched.
+
+    data/inference_logs.db is runtime state: untracked, and absent from a fresh
+    clone. Asserting on the directory keeps this meaningful either way.
+    """
+    before = _repo_data_snapshot()
 
     client.post("/predict", json=valid_payload)
 
-    assert TRACKED_DB_PATH.read_bytes() == before
+    assert _repo_data_snapshot() == before
 
 
 def test_analytics_summary_is_well_formed_when_no_logs_exist(client):

@@ -26,7 +26,9 @@ from app import app
 
 REPO_ROOT = Path(__file__).resolve().parent
 ARTIFACTS_DIR = REPO_ROOT / "model_artifacts"
-TRACKED_DB_PATH = REPO_ROOT / "data" / "inference_logs.db"
+# The runtime SQLite log lives here. It is deliberately untracked and absent
+# from a fresh clone, so tests assert on the directory rather than one file.
+REPO_DATA_DIR = REPO_ROOT / "data"
 
 # A payload that satisfies every DiabetesFeatures constraint. Tests that want an
 # invalid request start from this and corrupt exactly one field.
