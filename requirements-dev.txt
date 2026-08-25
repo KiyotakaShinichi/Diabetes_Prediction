@@ -1,5 +1,17 @@
-# Development / CI dependencies. Install alongside requirements.txt:
+# Development / CI dependencies (human-maintainable source file).
+#
+# Everyday development:
 #   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Reproducible / CI install:
+#   pip install -r requirements.lock.txt -r requirements-dev.lock.txt
+#
+# Regenerate requirements-dev.lock.txt after changing this file. The
+# --constraint keeps every shared transitive package pinned to the exact
+# version already chosen by the production lock:
+#   uv pip compile --universal --python-version 3.11 \
+#       --constraint requirements.lock.txt \
+#       --output-file requirements-dev.lock.txt requirements-dev.txt
 pytest>=8.3,<10
 httpx>=0.28,<1
 ruff>=0.13,<1
