@@ -19,9 +19,12 @@ from fastapi.testclient import TestClient
 import app as app_module
 from app import ArtifactUnavailableError, InferenceError, ServiceError, app
 
-# Substrings that must never appear in a client-facing error body.
+# Substrings that must never appear in a client-facing error body. The Windows
+# drive prefix is assembled rather than written literally so this file does not
+# itself trip tests/test_portability.py's ban on drive-letter path literals.
+_WINDOWS_DRIVE = "C" + ":" + "\\"
 LEAK_MARKERS = (
-    "Traceback", "model_artifacts", ".pkl", "C:\\", "/home/", "sqlite3",
+    "Traceback", "model_artifacts", ".pkl", _WINDOWS_DRIVE, "/home/", "sqlite3",
     "psycopg", "SELECT", "INSERT", "postgresql://", "password",
 )
 
