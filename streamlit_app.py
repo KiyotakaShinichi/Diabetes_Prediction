@@ -4,30 +4,104 @@ Clinical Decision Support Tool for Healthcare Professionals
 
 Run with: streamlit run streamlit_app.py
 """
+
 from pathlib import Path
+
 import uuid
 
 import joblib
+
 import numpy as np
+
 import pandas as pd
+
 import streamlit as st
 
 from inference_db import log_inference
 
-# ---------------------------
-# Page Configuration
-# ---------------------------
-st.set_page_config(
-    page_title="Diabetes Risk Assessment System",
-    page_icon="🏥",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
+PROJECT_ROOT = Path(__file__).resolve().parent
 
-# ---------------------------
-# Custom CSS for Medical Theme
-# ---------------------------
-st.markdown("""
+ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
+
+MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
+
+SHAP_EXPLAINER_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
+
+@st.cache_resource
+def load_model():
+    if not MODEL_BUNDLE_PATH.exists():
+        return None, None, None, None, None
+    bundle = joblib.load(MODEL_BUNDLE_PATH)
+    return (
+        bundle["pipeline"],
+        float(bundle["threshold"]),
+        bundle["feature_columns"],
+        bundle.get("feature_labels", {}),
+        bundle.get("confidence_intervals"),
+    )
+
+@st.cache_resource
+def load_shap_explainer():
+    if not SHAP_EXPLAINER_PATH.exists():
+        return None, None, None
+    shap_bundle = joblib.load(SHAP_EXPLAINER_PATH)
+    return (
+        shap_bundle["explainer"],
+        shap_bundle["expected_value"],
+        shap_bundle["feature_names"],
+    )
+
+genhlth_options = {
+    "Excellent": 1,
+    "Very Good": 2,
+    "Good": 3,
+    "Fair": 4,
+    "Poor": 5,
+}
+
+age_options = {
+    "18-24 years": 1,
+    "25-29 years": 2,
+    "30-34 years": 3,
+    "35-39 years": 4,
+    "40-44 years": 5,
+    "45-49 years": 6,
+    "50-54 years": 7,
+    "55-59 years": 8,
+    "60-64 years": 9,
+    "65-69 years": 10,
+    "70-74 years": 11,
+    "75-79 years": 12,
+    "80+ years": 13,
+}
+
+education_options = {
+    "Never attended school": 1,
+    "Elementary (Grades 1-8)": 2,
+    "Some high school (Grades 9-11)": 3,
+    "High school graduate / GED": 4,
+    "Some college / Technical school": 5,
+    "College graduate or higher": 6,
+}
+
+binary_yes_no = {"No": 0, "Yes": 1}
+
+def main() -> None:
+    """Render the assessment UI.
+
+    Streamlit executes the script with __name__ == "__main__" (verified
+    against streamlit.testing AppTest), so this runs under
+    `streamlit run streamlit_app.py` while a plain import stays free of UI
+    side effects - no page config, no CSS injection, no model loading.
+    """
+    st.set_page_config(
+        page_title="Diabetes Risk Assessment System",
+        page_icon="🏥",
+        layout="centered",
+        initial_sidebar_state="collapsed",
+    )
+
+    st.markdown("""
 <style>
     /* Medical blue color scheme */
     .stApp {
@@ -94,253 +168,171 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------
-# Model Loading
-# ---------------------------
-# Resolve packaged resources from the project directory, never from the caller's
-# working directory, so the service behaves identically wherever it is launched.
-PROJECT_ROOT = Path(__file__).resolve().parent
-ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
+    pipeline, threshold, feature_columns, feature_labels, ci_bounds = load_model()
 
-MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
-SHAP_EXPLAINER_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
+    shap_explainer, shap_expected, shap_features = load_shap_explainer()
 
-
-@st.cache_resource
-def load_model():
-    if not MODEL_BUNDLE_PATH.exists():
-        return None, None, None, None, None
-    bundle = joblib.load(MODEL_BUNDLE_PATH)
-    return (
-        bundle["pipeline"],
-        float(bundle["threshold"]),
-        bundle["feature_columns"],
-        bundle.get("feature_labels", {}),
-        bundle.get("confidence_intervals"),
-    )
-
-
-@st.cache_resource
-def load_shap_explainer():
-    if not SHAP_EXPLAINER_PATH.exists():
-        return None, None, None
-    shap_bundle = joblib.load(SHAP_EXPLAINER_PATH)
-    return (
-        shap_bundle["explainer"],
-        shap_bundle["expected_value"],
-        shap_bundle["feature_names"],
-    )
-
-
-pipeline, threshold, feature_columns, feature_labels, ci_bounds = load_model()
-shap_explainer, shap_expected, shap_features = load_shap_explainer()
-
-# ---------------------------
-# Header
-# ---------------------------
-st.markdown("""
+    st.markdown("""
 <div class="main-header">
     <h1>🏥 Diabetes Risk Assessment System</h1>
     <p>Clinical Decision Support Tool | Powered by Machine Learning</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Check if model is loaded
-if pipeline is None:
-    st.error("⚠️ Model not found. Please run `python logisticregression_only.py` to train the model first.")
-    st.stop()
+    if pipeline is None:
+        st.error("⚠️ Model not found. Please run `python logisticregression_only.py` to train the model first.")
+        st.stop()
 
-# ---------------------------
-# Input Mappings
-# ---------------------------
-genhlth_options = {
-    "Excellent": 1,
-    "Very Good": 2,
-    "Good": 3,
-    "Fair": 4,
-    "Poor": 5,
-}
+    tab_assess, tab_info = st.tabs(["📋 Risk Assessment", "ℹ️ Clinical Information"])
 
-age_options = {
-    "18-24 years": 1,
-    "25-29 years": 2,
-    "30-34 years": 3,
-    "35-39 years": 4,
-    "40-44 years": 5,
-    "45-49 years": 6,
-    "50-54 years": 7,
-    "55-59 years": 8,
-    "60-64 years": 9,
-    "65-69 years": 10,
-    "70-74 years": 11,
-    "75-79 years": 12,
-    "80+ years": 13,
-}
-
-education_options = {
-    "Never attended school": 1,
-    "Elementary (Grades 1-8)": 2,
-    "Some high school (Grades 9-11)": 3,
-    "High school graduate / GED": 4,
-    "Some college / Technical school": 5,
-    "College graduate or higher": 6,
-}
-
-binary_yes_no = {"No": 0, "Yes": 1}
-
-# ---------------------------
-# Tabs
-# ---------------------------
-tab_assess, tab_info = st.tabs(["📋 Risk Assessment", "ℹ️ Clinical Information"])
-
-with tab_assess:
-    st.markdown('<h3 class="section-header">Patient Clinical Data</h3>', unsafe_allow_html=True)
+    with tab_assess:
+        st.markdown('<h3 class="section-header">Patient Clinical Data</h3>', unsafe_allow_html=True)
     
-    with st.form("assessment_form"):
-        # Demographics Section
-        st.markdown("**Demographics**")
-        col1, col2 = st.columns(2)
-        with col1:
-            age_label = st.selectbox(
-                "Age Group",
-                options=list(age_options.keys()),
-                index=6,
-                help="Patient's age category"
-            )
-        with col2:
-            education_label = st.selectbox(
-                "Education Level",
-                options=list(education_options.keys()),
-                index=5,
-                help="Highest education level attained"
-            )
+        with st.form("assessment_form"):
+            # Demographics Section
+            st.markdown("**Demographics**")
+            col1, col2 = st.columns(2)
+            with col1:
+                age_label = st.selectbox(
+                    "Age Group",
+                    options=list(age_options.keys()),
+                    index=6,
+                    help="Patient's age category"
+                )
+            with col2:
+                education_label = st.selectbox(
+                    "Education Level",
+                    options=list(education_options.keys()),
+                    index=5,
+                    help="Highest education level attained"
+                )
         
-        # Health Status Section
-        st.markdown("**General Health Status**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            genhlth_label = st.selectbox(
-                "Self-Reported Health",
-                options=list(genhlth_options.keys()),
-                index=2,
-                help="Patient's perception of overall health"
-            )
-        with col2:
-            bmi = st.number_input(
-                "BMI (kg/m²)",
-                min_value=10.0,
-                max_value=80.0,
-                value=27.0,
-                step=0.1,
-                help="Body Mass Index"
-            )
-        with col3:
-            phys_hlth = st.number_input(
-                "Poor Physical Health Days",
-                min_value=0,
-                max_value=30,
-                value=0,
-                help="Days in past 30 with poor physical health"
-            )
+            # Health Status Section
+            st.markdown("**General Health Status**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                genhlth_label = st.selectbox(
+                    "Self-Reported Health",
+                    options=list(genhlth_options.keys()),
+                    index=2,
+                    help="Patient's perception of overall health"
+                )
+            with col2:
+                bmi = st.number_input(
+                    "BMI (kg/m²)",
+                    min_value=10.0,
+                    max_value=80.0,
+                    value=27.0,
+                    step=0.1,
+                    help="Body Mass Index"
+                )
+            with col3:
+                phys_hlth = st.number_input(
+                    "Poor Physical Health Days",
+                    min_value=0,
+                    max_value=30,
+                    value=0,
+                    help="Days in past 30 with poor physical health"
+                )
         
-        # Cardiovascular Risk Factors
-        st.markdown("**Cardiovascular Risk Factors**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            high_bp_label = st.selectbox(
-                "High Blood Pressure",
-                options=list(binary_yes_no.keys()),
-                index=0,
-                help="History of hypertension"
-            )
-        with col2:
-            high_chol_label = st.selectbox(
-                "High Cholesterol",
-                options=list(binary_yes_no.keys()),
-                index=0,
-                help="History of hypercholesterolemia"
-            )
-        with col3:
-            heart_label = st.selectbox(
-                "Heart Disease/Attack",
-                options=list(binary_yes_no.keys()),
-                index=0,
-                help="History of coronary heart disease or MI"
-            )
+            # Cardiovascular Risk Factors
+            st.markdown("**Cardiovascular Risk Factors**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                high_bp_label = st.selectbox(
+                    "High Blood Pressure",
+                    options=list(binary_yes_no.keys()),
+                    index=0,
+                    help="History of hypertension"
+                )
+            with col2:
+                high_chol_label = st.selectbox(
+                    "High Cholesterol",
+                    options=list(binary_yes_no.keys()),
+                    index=0,
+                    help="History of hypercholesterolemia"
+                )
+            with col3:
+                heart_label = st.selectbox(
+                    "Heart Disease/Attack",
+                    options=list(binary_yes_no.keys()),
+                    index=0,
+                    help="History of coronary heart disease or MI"
+                )
         
-        # Lifestyle Factors
-        st.markdown("**Lifestyle Factors**")
-        col1, col2 = st.columns(2)
-        with col1:
-            phys_activity_label = st.selectbox(
-                "Physically Active",
-                options=list(binary_yes_no.keys()),
-                index=1,
-                help="Physical activity in past 30 days (non-work)"
-            )
-        with col2:
-            diff_walk_label = st.selectbox(
-                "Difficulty Walking",
-                options=list(binary_yes_no.keys()),
-                index=0,
-                help="Difficulty walking or climbing stairs"
-            )
+            # Lifestyle Factors
+            st.markdown("**Lifestyle Factors**")
+            col1, col2 = st.columns(2)
+            with col1:
+                phys_activity_label = st.selectbox(
+                    "Physically Active",
+                    options=list(binary_yes_no.keys()),
+                    index=1,
+                    help="Physical activity in past 30 days (non-work)"
+                )
+            with col2:
+                diff_walk_label = st.selectbox(
+                    "Difficulty Walking",
+                    options=list(binary_yes_no.keys()),
+                    index=0,
+                    help="Difficulty walking or climbing stairs"
+                )
         
-        # Submit Button
-        st.markdown("---")
-        submitted = st.form_submit_button(
-            "🔬 Assess Diabetes Risk",
-            use_container_width=True,
-            type="primary"
-        )
+            # Submit Button
+            st.markdown("---")
+            submitted = st.form_submit_button(
+                "🔬 Assess Diabetes Risk",
+                use_container_width=True,
+                type="primary"
+            )
     
-    if submitted:
-        # Build feature vector (order must match SELECTED_FEATURES)
-        payload = {
-            "GenHlth": genhlth_options[genhlth_label],
-            "HighBP": binary_yes_no[high_bp_label],
-            "BMI": bmi,
-            "HighChol": binary_yes_no[high_chol_label],
-            "Age": age_options[age_label],
-            "DiffWalk": binary_yes_no[diff_walk_label],
-            "HeartDiseaseorAttack": binary_yes_no[heart_label],
-            "PhysHlth": phys_hlth,
-            "Education": education_options[education_label],
-            "PhysActivity": binary_yes_no[phys_activity_label],
-        }
+        if submitted:
+            # Build feature vector (order must match SELECTED_FEATURES)
+            payload = {
+                "GenHlth": genhlth_options[genhlth_label],
+                "HighBP": binary_yes_no[high_bp_label],
+                "BMI": bmi,
+                "HighChol": binary_yes_no[high_chol_label],
+                "Age": age_options[age_label],
+                "DiffWalk": binary_yes_no[diff_walk_label],
+                "HeartDiseaseorAttack": binary_yes_no[heart_label],
+                "PhysHlth": phys_hlth,
+                "Education": education_options[education_label],
+                "PhysActivity": binary_yes_no[phys_activity_label],
+            }
         
-        input_df = pd.DataFrame([payload])[feature_columns]
-        probability = float(pipeline.predict_proba(input_df)[:, 1][0])
-        prediction = int(probability >= threshold)
+            input_df = pd.DataFrame([payload])[feature_columns]
+            probability = float(pipeline.predict_proba(input_df)[:, 1][0])
+            prediction = int(probability >= threshold)
 
-        # Log inference for monitoring/analytics (uses SQLite locally or DATABASE_URL if set)
-        try:
-            request_id = str(uuid.uuid4())
-            log_inference(
-                request_id=request_id,
-                model_variant="A",
-                model_name="logistic_regression",
-                probability=probability,
-                prediction=prediction,
-                threshold=threshold,
-                payload=payload,
-            )
-        except Exception:
-            # Logging must never break the clinical UI; swallow/log errors silently in Streamlit.
-            pass
+            # Log inference for monitoring/analytics (uses SQLite locally or DATABASE_URL if set)
+            try:
+                request_id = str(uuid.uuid4())
+                log_inference(
+                    request_id=request_id,
+                    model_variant="A",
+                    model_name="logistic_regression",
+                    probability=probability,
+                    prediction=prediction,
+                    threshold=threshold,
+                    payload=payload,
+                )
+            except Exception:
+                # Logging must never break the clinical UI; swallow/log errors silently in Streamlit.
+                pass
         
-        # Results Display
-        st.markdown('<h3 class="section-header">Assessment Results</h3>', unsafe_allow_html=True)
+            # Results Display
+            st.markdown('<h3 class="section-header">Assessment Results</h3>', unsafe_allow_html=True)
         
-        # Metrics Row
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Risk Score", f"{probability:.1%}")
-        col2.metric("Classification Threshold", f"{threshold:.1%}")
-        col3.metric("Risk Category", "HIGH" if prediction == 1 else "LOW")
+            # Metrics Row
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Risk Score", f"{probability:.1%}")
+            col2.metric("Classification Threshold", f"{threshold:.1%}")
+            col3.metric("Risk Category", "HIGH" if prediction == 1 else "LOW")
         
-        # Result Card
-        if prediction == 1:
-            st.markdown("""
+            # Result Card
+            if prediction == 1:
+                st.markdown("""
             <div class="risk-high">
                 <strong>⚠️ ELEVATED DIABETES RISK</strong><br>
                 The patient's clinical profile indicates an elevated risk of diabetes. 
@@ -348,8 +340,8 @@ with tab_assess:
                 and oral glucose tolerance test (OGTT) as appropriate.
             </div>
             """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
+            else:
+                st.markdown("""
             <div class="risk-low">
                 <strong>✓ LOWER DIABETES RISK</strong><br>
                 The patient's clinical profile indicates a lower risk of diabetes based on 
@@ -357,66 +349,66 @@ with tab_assess:
             </div>
             """, unsafe_allow_html=True)
         
-        # Risk Factor Summary
-        with st.expander("📊 Factor Analysis"):
-            st.write("**Input Summary:**")
-            summary_df = pd.DataFrame([{
-                "Factor": k,
-                "Value": v,
-                "Description": feature_labels.get(k, k)
-            } for k, v in payload.items()])
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            # Risk Factor Summary
+            with st.expander("📊 Factor Analysis"):
+                st.write("**Input Summary:**")
+                summary_df = pd.DataFrame([{
+                    "Factor": k,
+                    "Value": v,
+                    "Description": feature_labels.get(k, k)
+                } for k, v in payload.items()])
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-        # SHAP Explanation
-        if shap_explainer is not None:
-            with st.expander("🔍 SHAP Feature Contributions (Explainable AI)", expanded=True):
-                st.caption("How each feature pushed the prediction higher or lower")
-                shap_vals = shap_explainer.shap_values(input_df)
-                if isinstance(shap_vals, list):
-                    shap_vals = shap_vals[1]
+            # SHAP Explanation
+            if shap_explainer is not None:
+                with st.expander("🔍 SHAP Feature Contributions (Explainable AI)", expanded=True):
+                    st.caption("How each feature pushed the prediction higher or lower")
+                    shap_vals = shap_explainer.shap_values(input_df)
+                    if isinstance(shap_vals, list):
+                        shap_vals = shap_vals[1]
                 
-                contributions = pd.DataFrame({
-                    "Feature": feature_columns,
-                    "SHAP Value": shap_vals[0],
-                    "Input Value": [float(input_df.iloc[0][c]) for c in feature_columns],
-                }).sort_values("SHAP Value", key=abs, ascending=False)
+                    contributions = pd.DataFrame({
+                        "Feature": feature_columns,
+                        "SHAP Value": shap_vals[0],
+                        "Input Value": [float(input_df.iloc[0][c]) for c in feature_columns],
+                    }).sort_values("SHAP Value", key=abs, ascending=False)
                 
-                # Horizontal bar chart
-                chart_df = contributions.set_index("Feature")["SHAP Value"].sort_values()
-                colors = ["#dc2626" if v > 0 else "#2563eb" for v in chart_df.values]
+                    # Horizontal bar chart
+                    chart_df = contributions.set_index("Feature")["SHAP Value"].sort_values()
+                    colors = ["#dc2626" if v > 0 else "#2563eb" for v in chart_df.values]
                 
-                import matplotlib.pyplot as plt
-                fig, ax = plt.subplots(figsize=(8, 4))
-                ax.barh(chart_df.index, chart_df.values, color=colors)
-                ax.set_xlabel("SHAP Value (impact on prediction)")
-                ax.axvline(x=0, color="gray", linewidth=0.8)
-                ax.set_title("Feature Contributions to Risk Score")
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
+                    import matplotlib.pyplot as plt
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    ax.barh(chart_df.index, chart_df.values, color=colors)
+                    ax.set_xlabel("SHAP Value (impact on prediction)")
+                    ax.axvline(x=0, color="gray", linewidth=0.8)
+                    ax.set_title("Feature Contributions to Risk Score")
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
                 
-                st.caption("🔴 Red = increases diabetes risk | 🔵 Blue = decreases diabetes risk")
+                    st.caption("🔴 Red = increases diabetes risk | 🔵 Blue = decreases diabetes risk")
 
-                st.write("**Detailed Values:**")
-                st.dataframe(contributions, use_container_width=True, hide_index=True)
+                    st.write("**Detailed Values:**")
+                    st.dataframe(contributions, use_container_width=True, hide_index=True)
 
-        # Confidence Intervals
-        if ci_bounds is not None:
-            with st.expander("📈 Model Confidence Intervals (95%)"):
-                st.caption("Bootstrap-estimated 95% CI from the held-out test set")
-                ci_df = pd.DataFrame([
-                    {
-                        "Metric": metric.upper(),
-                        "Mean": f"{vals['mean']:.4f}",
-                        "95% CI Lower": f"{vals['ci_lower']:.4f}",
-                        "95% CI Upper": f"{vals['ci_upper']:.4f}",
-                    }
-                    for metric, vals in ci_bounds.items()
-                ])
-                st.dataframe(ci_df, use_container_width=True, hide_index=True)
+            # Confidence Intervals
+            if ci_bounds is not None:
+                with st.expander("📈 Model Confidence Intervals (95%)"):
+                    st.caption("Bootstrap-estimated 95% CI from the held-out test set")
+                    ci_df = pd.DataFrame([
+                        {
+                            "Metric": metric.upper(),
+                            "Mean": f"{vals['mean']:.4f}",
+                            "95% CI Lower": f"{vals['ci_lower']:.4f}",
+                            "95% CI Upper": f"{vals['ci_upper']:.4f}",
+                        }
+                        for metric, vals in ci_bounds.items()
+                    ])
+                    st.dataframe(ci_df, use_container_width=True, hide_index=True)
         
-        # Disclaimer
-        st.markdown("""
+            # Disclaimer
+            st.markdown("""
         <div class="disclaimer">
             <strong>⚕️ Clinical Disclaimer:</strong> This tool is intended for clinical decision 
             support only and should not replace professional medical judgment. All diagnostic and 
@@ -425,10 +417,10 @@ with tab_assess:
         </div>
         """, unsafe_allow_html=True)
 
-with tab_info:
-    st.markdown('<h3 class="section-header">About This Assessment Tool</h3>', unsafe_allow_html=True)
+    with tab_info:
+        st.markdown('<h3 class="section-header">About This Assessment Tool</h3>', unsafe_allow_html=True)
     
-    st.markdown("""
+        st.markdown("""
     This diabetes risk assessment system uses a logistic regression model trained on 
     population health survey data to estimate the probability of diabetes based on 
     clinical and lifestyle factors.
@@ -474,9 +466,13 @@ with tab_info:
     - Population-level model may not capture individual variability
     """)
     
-    st.markdown("""
+        st.markdown("""
     <div class="disclaimer">
         <strong>Data Source:</strong> Model trained on CDC Behavioral Risk Factor 
         Surveillance System (BRFSS) data focusing on diabetes-related health indicators.
     </div>
     """, unsafe_allow_html=True)
+
+
+if __name__ == "__main__":
+    main()

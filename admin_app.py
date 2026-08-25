@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from admin_auth import authenticate_user, ensure_default_admin
+from admin_auth import authenticate_user, authentication_status, is_configured
 from inference_db import fetch_recent_logs
 
 # Resolve packaged resources from the project directory, never from the caller's
@@ -27,23 +27,30 @@ DRIFT_BASELINE_A = ARTIFACTS_DIR / "drift_baseline.pkl"
 DRIFT_BASELINE_B = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
 
 
-st.set_page_config(
-    page_title="Admin Dashboard - Diabetes Prediction System",
-    page_icon="🔒",
-    layout="wide",
-)
-
-ensure_default_admin()
-if "admin_authenticated" not in st.session_state:
-    st.session_state.admin_authenticated = False
-if "admin_username" not in st.session_state:
-    st.session_state.admin_username = ""
+def _configure_page() -> None:
+    """Streamlit page setup. Called from main(), never at import time."""
+    st.set_page_config(
+        page_title="Admin Dashboard - Diabetes Prediction System",
+        page_icon="🔒",
+        layout="wide",
+    )
+    st.session_state.setdefault("admin_authenticated", False)
+    st.session_state.setdefault("admin_username", "")
 
 
 def login_page():
     """Render login form."""
     st.title("🔒 Admin Login")
     st.write("This dashboard is restricted to authorized personnel.")
+
+    if not is_configured():
+        st.error(
+            "Admin authentication is not configured, so no login can succeed. "
+            "Set ADMIN_USERNAME and ADMIN_PASSWORD, or create an account with "
+            "`python create_admin_user.py --username <name>`."
+        )
+        st.caption(f"Status: {authentication_status()}")
+        return
 
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -319,8 +326,19 @@ def dashboard_page():
                     st.warning("Could not parse inference payloads.")
 
 
-# Main routing
-if st.session_state.admin_authenticated:
-    dashboard_page()
-else:
-    login_page()
+def main() -> None:
+    """Application entrypoint.
+
+    Streamlit executes the script with __name__ == "__main__" (verified against
+    streamlit.testing AppTest), so the guard below runs under
+    `streamlit run admin_app.py` while a plain import stays side-effect free.
+    """
+    _configure_page()
+    if st.session_state.admin_authenticated:
+        dashboard_page()
+    else:
+        login_page()
+
+
+if __name__ == "__main__":
+    main()
