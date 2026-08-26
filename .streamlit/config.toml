@@ -1,0 +1,18 @@
+# Streamlit theme for both entrypoints (streamlit_app.py and admin_app.py).
+#
+# Pinned explicitly to the light base. Without this, theme.base is unset and
+# Streamlit follows the browser's prefers-color-scheme, which previously left
+# dark-mode visitors reading the dark palette's light text against a light
+# background forced by custom CSS - about 1:1 contrast. The fix belongs here,
+# in supported configuration, rather than in a CSS override.
+#
+# Contrast against backgroundColor (WCAG 2.1 relative luminance):
+#   textColor    #1f2933 on #f8fafc = 14.10:1  (AAA)
+#   primaryColor #005f8f on #f8fafc =  6.62:1  (AA, AAA for large text)
+#   white text   on primaryColor    =  6.92:1  (AA)
+[theme]
+base = "light"
+primaryColor = "#005f8f"
+backgroundColor = "#f8fafc"
+secondaryBackgroundColor = "#eef2f6"
+textColor = "#1f2933"

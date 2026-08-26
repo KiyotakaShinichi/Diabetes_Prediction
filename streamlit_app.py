@@ -1,20 +1,16 @@
 """
-Diabetes Risk Assessment System
-Clinical Decision Support Tool for Healthcare Professionals
+Diabetes Risk Assessment
+Educational risk-estimation tool. Not a diagnostic device.
 
 Run with: streamlit run streamlit_app.py
 """
 
+import json
+import uuid
 from pathlib import Path
 
-import uuid
-
 import joblib
-
-import numpy as np
-
 import pandas as pd
-
 import streamlit as st
 
 from inference_db import log_inference
@@ -28,6 +24,18 @@ MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
 
 SHAP_EXPLAINER_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
 
+METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
+
+ATTESTATION_PATH = PROJECT_ROOT / "provenance" / "legacy_artifact_attestation.json"
+
+#: Shown as the first option of every categorical input. Selecting nothing is a
+#: valid state that blocks scoring, so an untouched form cannot produce a result.
+PLACEHOLDER = "Select..."
+
+#: The served variant behind this UI. Variant B is reachable through the API.
+MODEL_VARIANT = "A"
+
+
 @st.cache_resource
 def load_model():
     if not MODEL_BUNDLE_PATH.exists():
@@ -37,9 +45,10 @@ def load_model():
         bundle["pipeline"],
         float(bundle["threshold"]),
         bundle["feature_columns"],
-        bundle.get("feature_labels", {}),
+        bundle.get("model_name", "unknown"),
         bundle.get("confidence_intervals"),
     )
+
 
 @st.cache_resource
 def load_shap_explainer():
@@ -51,6 +60,33 @@ def load_shap_explainer():
         shap_bundle["expected_value"],
         shap_bundle["feature_names"],
     )
+
+
+@st.cache_data
+def load_evaluation_metrics() -> dict:
+    """Held-out test metrics as committed by training. Never recomputed here."""
+    if not METRICS_PATH.exists():
+        return {}
+
+    with open(METRICS_PATH, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+@st.cache_data
+def load_artifact_attestation() -> dict:
+    """Integrity record for the committed artifacts, or {} when absent.
+
+    Deliberately read-only and deliberately incomplete: the committed models
+    predate the provenance system, so this file states what is observable now
+    and records the rest as explicitly unknown. The UI must not present more
+    than it says.
+    """
+    if not ATTESTATION_PATH.exists():
+        return {}
+
+    with open(ATTESTATION_PATH, encoding="utf-8") as handle:
+        return json.load(handle)
+
 
 genhlth_options = {
     "Excellent": 1,
@@ -87,6 +123,436 @@ education_options = {
 
 binary_yes_no = {"No": 0, "Yes": 1}
 
+#: Only what Streamlit has no primitive for: the page banner and the result
+#: hero. Colours are stated explicitly rather than inherited, and no
+#: Streamlit-generated class is targeted, so a Streamlit upgrade cannot silently
+#: restyle the page. The app background is NOT overridden - that belongs to
+#: .streamlit/config.toml.
+CUSTOM_CSS = """
+<style>
+    .app-header {
+        background: linear-gradient(135deg, #015f8f, #00697f);
+        padding: 1.25rem 1.5rem;
+        border-radius: 10px;
+        color: #ffffff;
+        margin-bottom: 1.25rem;
+    }
+
+    .app-header h1 {
+        margin: 0;
+        font-size: 1.6rem;
+        color: #ffffff;
+    }
+
+    .app-header p {
+        margin: 0.4rem 0 0 0;
+        font-size: 0.95rem;
+        color: #ffffff;
+    }
+
+    .risk-hero {
+        padding: 1.25rem;
+        border-radius: 8px;
+        border-left: 6px solid;
+        color: #1f2933;
+    }
+
+    .risk-hero .risk-label {
+        font-size: 0.95rem;
+        margin: 0;
+    }
+
+    .risk-hero .risk-value {
+        font-size: 2.75rem;
+        font-weight: 700;
+        line-height: 1.1;
+        margin: 0.2rem 0;
+    }
+
+    .risk-hero .risk-band {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    .risk-hero .risk-note {
+        font-size: 0.9rem;
+        margin: 0.6rem 0 0 0;
+    }
+
+    .risk-hero.is-elevated {
+        background-color: #fee2e2;
+        border-left-color: #b91c1c;
+    }
+
+    .risk-hero.is-lower {
+        background-color: #dcfce7;
+        border-left-color: #15803d;
+    }
+</style>
+"""
+
+
+def render_header() -> None:
+    """Page banner. The only <h1> on the page; sections below use st.header."""
+    st.markdown(
+        '<div class="app-header">'
+        "<h1>Diabetes Risk Assessment</h1>"
+        "<p>An educational machine-learning tool for estimating diabetes risk "
+        "from general health and lifestyle information.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_scope_notice() -> None:
+    """The non-diagnostic boundary, stated before any input is collected."""
+    st.info(
+        "**This tool does not diagnose diabetes.** It estimates a statistical "
+        "risk score from survey-style health information, using a model trained "
+        "on population data. It uses no blood tests or laboratory values. "
+        "Discuss any health concerns with a qualified healthcare professional - "
+        "a clinical diagnosis requires appropriate medical evaluation.",
+        icon=":material/info:",
+    )
+
+
+def collect_inputs() -> tuple[dict, dict]:
+    """Render the input form; return (numeric payload, human-readable answers).
+
+    Every categorical starts on a placeholder and BMI/PhysHlth start empty, so
+    nothing is pre-filled on behalf of the visitor. Missing entries are reported
+    to the caller as absent keys rather than substituted with a default.
+    """
+    payload: dict[str, float] = {}
+    answers: dict[str, str] = {}
+
+    def categorical(name: str, label: str, mapping: dict[str, int], help_text: str) -> None:
+        choice = st.selectbox(
+            label, options=[PLACEHOLDER, *mapping], index=0, help=help_text
+        )
+        if choice != PLACEHOLDER:
+            payload[name] = mapping[choice]
+            answers[name] = choice
+
+    st.subheader("About you")
+    col1, col2 = st.columns(2)
+    with col1:
+        categorical("Age", "Age group", age_options, "Your age range.")
+    with col2:
+        categorical(
+            "Education", "Education level", education_options,
+            "The highest level of education you completed.",
+        )
+
+    st.subheader("General health")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        categorical(
+            "GenHlth", "How is your general health?", genhlth_options,
+            "Your own view of your overall health.",
+        )
+    with col2:
+        bmi_spec = feature_contract.spec_for("BMI")
+        bmi = st.number_input(
+            "Body Mass Index (BMI)",
+            min_value=float(bmi_spec.minimum),
+            max_value=float(bmi_spec.maximum),
+            value=None,
+            step=0.1,
+            placeholder=f"{bmi_spec.minimum:g}-{bmi_spec.maximum:g}",
+            help="Weight in kilograms divided by height in metres squared.",
+        )
+        if bmi is not None:
+            payload["BMI"] = float(bmi)
+            answers["BMI"] = f"{float(bmi):.1f}"
+    with col3:
+        phys_spec = feature_contract.spec_for("PhysHlth")
+        phys_hlth = st.number_input(
+            "Days of poor physical health",
+            min_value=int(phys_spec.minimum),
+            max_value=int(phys_spec.maximum),
+            value=None,
+            step=1,
+            placeholder=f"{phys_spec.minimum:g}-{phys_spec.maximum:g}",
+            help="In the past 30 days, how many days was your physical health not good?",
+        )
+        if phys_hlth is not None:
+            payload["PhysHlth"] = int(phys_hlth)
+            answers["PhysHlth"] = f"{int(phys_hlth)} of the last 30 days"
+
+    st.subheader("Medical history")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        categorical(
+            "HighBP", "Told you have high blood pressure?", binary_yes_no,
+            "Whether a health professional has told you that you have high blood pressure.",
+        )
+    with col2:
+        categorical(
+            "HighChol", "Told you have high cholesterol?", binary_yes_no,
+            "Whether a health professional has told you that you have high cholesterol.",
+        )
+    with col3:
+        categorical(
+            "HeartDiseaseorAttack", "Heart disease or heart attack?", binary_yes_no,
+            "Any history of coronary heart disease or a heart attack.",
+        )
+
+    st.subheader("Daily activity")
+    col1, col2 = st.columns(2)
+    with col1:
+        categorical(
+            "PhysActivity", "Physically active in the past 30 days?", binary_yes_no,
+            "Any physical activity outside of work in the past 30 days.",
+        )
+    with col2:
+        categorical(
+            "DiffWalk", "Difficulty walking or climbing stairs?", binary_yes_no,
+            "Whether you have serious difficulty walking or climbing stairs.",
+        )
+
+    return payload, answers
+
+
+def missing_features(payload: dict) -> list[str]:
+    """Contract features the visitor has not answered yet, in contract order."""
+    return [
+        spec.display_label
+        for spec in feature_contract.FEATURE_SPECS
+        if spec.name not in payload
+    ]
+
+
+def score(pipeline, threshold: float, payload: dict) -> tuple[pd.DataFrame, float, int]:
+    """Canonical ordering, then a single scoring call. No UI here."""
+    input_df = feature_contract.order_columns(pd.DataFrame([payload]))
+    probability = float(pipeline.predict_proba(input_df)[:, 1][0])
+    return input_df, probability, int(probability >= threshold)
+
+
+def render_result(result: dict) -> None:
+    """The result hero: one primary quantity, then its plain-language meaning."""
+    probability = result["probability"]
+    elevated = result["prediction"] == 1
+    band = (
+        "Above the model's alert level"
+        if elevated
+        else "Below the model's alert level"
+    )
+    note = (
+        "This estimate is high enough that the model would flag it for a closer "
+        "look. It does not mean you have diabetes."
+        if elevated
+        else "This estimate is below the level at which the model would flag a "
+        "profile for a closer look. It does not rule out diabetes."
+    )
+
+    st.markdown(
+        f'<div class="risk-hero {"is-elevated" if elevated else "is-lower"}" '
+        'role="status" aria-live="polite">'
+        '<p class="risk-label">Estimated diabetes risk</p>'
+        f'<p class="risk-value">{probability:.0%}</p>'
+        f'<p class="risk-band">{band}</p>'
+        f'<p class="risk-note">{note}</p>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "This is a statistical risk estimate, not a diagnosis. Only a qualified "
+        "healthcare professional can diagnose diabetes."
+    )
+
+
+def render_answers(result: dict) -> None:
+    """What the visitor entered, in their words rather than in model codes."""
+    with st.expander("Your answers"):
+        rows = [
+            {
+                "Question": feature_contract.spec_for(name).display_label,
+                "Your answer": result["answers"].get(name, "-"),
+            }
+            for name in feature_contract.FEATURE_NAMES
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def render_explanation(result: dict, explainer_available: bool) -> None:
+    """Which answers moved the score, described rather than colour-coded."""
+    with st.expander("What influenced this estimate", expanded=True):
+        if not explainer_available:
+            st.info(
+                "The explanation model is not available in this deployment, so "
+                "the per-answer breakdown cannot be shown. The risk estimate "
+                "above is unaffected.",
+                icon=":material/info:",
+            )
+            return
+
+        st.caption(
+            "Each answer either pushed the estimate up or pulled it down, "
+            "relative to an average profile. These are associations the model "
+            "learned in the data, not causes."
+        )
+
+        contributions = pd.DataFrame(
+            [
+                {
+                    "Answer": feature_contract.spec_for(name).display_label,
+                    "You entered": result["answers"].get(name, "-"),
+                    "Effect": "Increased the estimate" if value > 0 else "Reduced the estimate",
+                    "Strength": abs(float(value)),
+                }
+                for name, value in result["shap"].items()
+            ]
+        ).sort_values("Strength", ascending=False)
+
+        st.dataframe(
+            contributions,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Strength": st.column_config.ProgressColumn(
+                    "Strength",
+                    help="How strongly this answer moved the estimate.",
+                    min_value=0.0,
+                    max_value=float(max(contributions["Strength"].max(), 1e-9)),
+                    format="%.3f",
+                )
+            },
+        )
+
+
+def render_performance(metrics: dict) -> None:
+    """Dataset-level evaluation numbers, labelled as such."""
+    test = metrics.get("test_metrics", {})
+    if not test:
+        return
+
+    with st.expander("How well the model performed on held-out data"):
+        st.caption(
+            "Measured once on a held-out test set that the model never saw "
+            "during training. These describe the model's behaviour across that "
+            "whole dataset - they are not a statement about how certain this "
+            "particular estimate is."
+        )
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Precision", f"{test['precision']:.0%}")
+        col2.metric("Recall", f"{test['recall']:.0%}")
+        col3.metric("ROC-AUC", f"{test['roc_auc']:.3f}")
+
+        st.markdown(
+            f"- Of the profiles the model flagged as higher-risk, about "
+            f"**{test['precision']:.0%}** did have diabetes in the evaluation data.\n"
+            f"- Of the people who did have diabetes, the model flagged about "
+            f"**{test['recall']:.0%}** of them.\n"
+            f"- Its overall ability to rank higher-risk profiles above lower-risk "
+            f"ones (ROC-AUC) was **{test['roc_auc']:.3f}**, where 0.5 is no better "
+            "than chance and 1.0 is perfect."
+        )
+
+
+def render_model_details(result: dict, attestation: dict) -> None:
+    """Model identity, limited to what the committed artifacts can support."""
+    with st.expander("Model details"):
+        col1, col2 = st.columns(2)
+        col1.metric("Model variant", result["model_variant"])
+        col2.metric("Features used", len(feature_contract.FEATURE_NAMES))
+
+        st.markdown(
+            f"- **Model family:** {result['model_name']}\n"
+            f"- **Alert level (classification threshold):** {result['threshold']:.1%} - "
+            "estimates at or above this are flagged as higher-risk. It was chosen "
+            "during training to balance catching true cases against false alarms, "
+            "and is model metadata rather than a number about you.\n"
+            f"- **Your estimate:** {result['probability']:.1%}"
+        )
+
+        if attestation:
+            unknown = attestation.get("unknown_history", {})
+            st.markdown(
+                f"- **Artifact integrity:** {len(attestation.get('artifacts', []))} "
+                "model files are inventoried by SHA-256 checksum and verified in CI."
+            )
+            if unknown.get("producer_git_sha") is None:
+                st.caption(
+                    "Training lineage for these artifacts is recorded as unknown: "
+                    "they predate this project's provenance system, and "
+                    "reconstructing a training run for them would be fabrication. "
+                    "Integrity of the files is verified; their history is not claimed."
+                )
+
+
+def render_about_tab(metrics: dict) -> None:
+    """Longer-form background, kept out of the assessment flow."""
+    st.header("About this tool")
+    st.markdown(
+        "This tool estimates the statistical likelihood of diabetes from ten "
+        "general health and lifestyle answers. It is built as an educational and "
+        "portfolio demonstration of an end-to-end machine-learning system, and "
+        "it is **not** a medical device."
+    )
+
+    st.subheader("What it does not do")
+    st.markdown(
+        "- It does not diagnose diabetes, or any other condition.\n"
+        "- It does not use blood glucose, HbA1c, or any laboratory result.\n"
+        "- It does not replace evaluation by a healthcare professional.\n"
+        "- It does not account for everything that affects an individual's risk."
+    )
+
+    st.subheader("How it works")
+    st.markdown(
+        "- **Model:** logistic regression with L2 regularisation.\n"
+        "- **Tuning:** Optuna hyperparameter search with 5-fold cross-validation.\n"
+        "- **Alert level:** chosen with Youden's J statistic, balancing sensitivity "
+        "and specificity.\n"
+        "- **Calibration:** Platt scaling, so the percentage behaves like a "
+        "probability rather than an arbitrary score.\n"
+        "- **Explanations:** SHAP values, showing how each answer moved the estimate.\n"
+        "- **Evaluation:** a held-out test set kept separate from training and tuning."
+    )
+
+    st.subheader("What it asks about")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Question": spec.display_label, "Accepted values": _domain_text(spec)}
+                for spec in feature_contract.FEATURE_SPECS
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    test = metrics.get("test_metrics", {})
+    if test:
+        st.subheader("Measured performance")
+        st.markdown(
+            f"On the held-out test set: precision **{test['precision']:.0%}**, "
+            f"recall **{test['recall']:.0%}**, ROC-AUC **{test['roc_auc']:.3f}**. "
+            "These are dataset-level figures, not a confidence level for any "
+            "individual estimate."
+        )
+
+    st.subheader("Data source")
+    st.markdown(
+        "Trained on the CDC Behavioral Risk Factor Surveillance System (BRFSS) "
+        "health-indicator dataset. BRFSS is a self-reported telephone survey, so "
+        "the model reflects the patterns and the limitations of survey data."
+    )
+
+
+def _domain_text(spec) -> str:
+    """Human-readable accepted range for one contract feature."""
+    if spec.kind == "binary":
+        return "Yes or No"
+    if spec.kind == "continuous":
+        return f"{spec.minimum:g} to {spec.maximum:g}"
+    return f"{spec.minimum:g} to {spec.maximum:g} (scale)"
+
+
 def main() -> None:
     """Render the assessment UI.
 
@@ -96,385 +562,102 @@ def main() -> None:
     side effects - no page config, no CSS injection, no model loading.
     """
     st.set_page_config(
-        page_title="Diabetes Risk Assessment System",
-        page_icon="🏥",
+        page_title="Diabetes Risk Assessment",
+        page_icon=":material/health_metrics:",
         layout="centered",
         initial_sidebar_state="collapsed",
     )
 
-    st.markdown("""
-<style>
-    /* Medical blue color scheme */
-    .stApp {
-        background-color: #f8fafc;
-    }
-    
-    .main-header {
-        background: linear-gradient(135deg, #0077b6, #00b4d8);
-        padding: 1.5rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    
-    .main-header h1 {
-        margin: 0;
-        font-size: 1.8rem;
-    }
-    
-    .main-header p {
-        margin: 0.5rem 0 0 0;
-        opacity: 0.9;
-        font-size: 0.95rem;
-    }
-    
-    .risk-high {
-        background-color: #fee2e2;
-        border-left: 4px solid #dc2626;
-        padding: 1rem;
-        border-radius: 0 8px 8px 0;
-    }
-    
-    .risk-low {
-        background-color: #dcfce7;
-        border-left: 4px solid #16a34a;
-        padding: 1rem;
-        border-radius: 0 8px 8px 0;
-    }
-    
-    .info-card {
-        background: white;
-        padding: 1rem;
-        border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-    }
-    
-    .disclaimer {
-        background-color: #fef3c7;
-        border: 1px solid #f59e0b;
-        padding: 1rem;
-        border-radius: 8px;
-        font-size: 0.85rem;
-        margin-top: 2rem;
-    }
-    
-    .section-header {
-        color: #0077b6;
-        border-bottom: 2px solid #0077b6;
-        padding-bottom: 0.5rem;
-        margin-top: 1.5rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-    pipeline, threshold, feature_columns, feature_labels, ci_bounds = load_model()
+    pipeline, threshold, feature_columns, model_name, _ci_bounds = load_model()
+    shap_explainer, _shap_expected, _shap_features = load_shap_explainer()
+    metrics = load_evaluation_metrics()
+    attestation = load_artifact_attestation()
 
-    shap_explainer, shap_expected, shap_features = load_shap_explainer()
-
-    st.markdown("""
-<div class="main-header">
-    <h1>🏥 Diabetes Risk Assessment System</h1>
-    <p>Clinical Decision Support Tool | Powered by Machine Learning</p>
-</div>
-""", unsafe_allow_html=True)
+    render_header()
 
     if pipeline is None:
-        st.error("⚠️ Model not found. Please run `python logisticregression_only.py` to train the model first.")
+        st.error(
+            "The risk model is not available, so no assessment can be made. "
+            "If you are running this locally, train the model first with "
+            "`python logisticregression_only.py`."
+        )
         st.stop()
 
-    tab_assess, tab_info = st.tabs(["📋 Risk Assessment", "ℹ️ Clinical Information"])
+    tab_assess, tab_about = st.tabs(["Risk assessment", "About this tool"])
 
     with tab_assess:
-        st.markdown('<h3 class="section-header">Patient Clinical Data</h3>', unsafe_allow_html=True)
-    
+        render_scope_notice()
+
+        st.header("Your health information")
+        st.caption("All fields are required. Nothing is filled in for you.")
+
         with st.form("assessment_form"):
-            # Demographics Section
-            st.markdown("**Demographics**")
-            col1, col2 = st.columns(2)
-            with col1:
-                age_label = st.selectbox(
-                    "Age Group",
-                    options=list(age_options.keys()),
-                    index=6,
-                    help="Patient's age category"
-                )
-            with col2:
-                education_label = st.selectbox(
-                    "Education Level",
-                    options=list(education_options.keys()),
-                    index=5,
-                    help="Highest education level attained"
-                )
-        
-            # Health Status Section
-            st.markdown("**General Health Status**")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                genhlth_label = st.selectbox(
-                    "Self-Reported Health",
-                    options=list(genhlth_options.keys()),
-                    index=2,
-                    help="Patient's perception of overall health"
-                )
-            with col2:
-                bmi = st.number_input(
-                    "BMI (kg/m²)",
-                    min_value=float(feature_contract.spec_for("BMI").minimum),
-                    max_value=float(feature_contract.spec_for("BMI").maximum),
-                    value=27.0,
-                    step=0.1,
-                    help="Body Mass Index"
-                )
-            with col3:
-                phys_hlth = st.number_input(
-                    "Poor Physical Health Days",
-                    min_value=int(feature_contract.spec_for("PhysHlth").minimum),
-                    max_value=int(feature_contract.spec_for("PhysHlth").maximum),
-                    value=0,
-                    help="Days in past 30 with poor physical health"
-                )
-        
-            # Cardiovascular Risk Factors
-            st.markdown("**Cardiovascular Risk Factors**")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                high_bp_label = st.selectbox(
-                    "High Blood Pressure",
-                    options=list(binary_yes_no.keys()),
-                    index=0,
-                    help="History of hypertension"
-                )
-            with col2:
-                high_chol_label = st.selectbox(
-                    "High Cholesterol",
-                    options=list(binary_yes_no.keys()),
-                    index=0,
-                    help="History of hypercholesterolemia"
-                )
-            with col3:
-                heart_label = st.selectbox(
-                    "Heart Disease/Attack",
-                    options=list(binary_yes_no.keys()),
-                    index=0,
-                    help="History of coronary heart disease or MI"
-                )
-        
-            # Lifestyle Factors
-            st.markdown("**Lifestyle Factors**")
-            col1, col2 = st.columns(2)
-            with col1:
-                phys_activity_label = st.selectbox(
-                    "Physically Active",
-                    options=list(binary_yes_no.keys()),
-                    index=1,
-                    help="Physical activity in past 30 days (non-work)"
-                )
-            with col2:
-                diff_walk_label = st.selectbox(
-                    "Difficulty Walking",
-                    options=list(binary_yes_no.keys()),
-                    index=0,
-                    help="Difficulty walking or climbing stairs"
-                )
-        
-            # Submit Button
-            st.markdown("---")
+            payload, answers = collect_inputs()
             submitted = st.form_submit_button(
-                "🔬 Assess Diabetes Risk",
-                use_container_width=True,
-                type="primary"
+                "Estimate my risk", use_container_width=True, type="primary"
             )
-    
+
         if submitted:
-            # Build feature vector (order must match SELECTED_FEATURES)
-            payload = {
-                "GenHlth": genhlth_options[genhlth_label],
-                "HighBP": binary_yes_no[high_bp_label],
-                "BMI": bmi,
-                "HighChol": binary_yes_no[high_chol_label],
-                "Age": age_options[age_label],
-                "DiffWalk": binary_yes_no[diff_walk_label],
-                "HeartDiseaseorAttack": binary_yes_no[heart_label],
-                "PhysHlth": phys_hlth,
-                "Education": education_options[education_label],
-                "PhysActivity": binary_yes_no[phys_activity_label],
-            }
-        
-            # Canonical order, and a hard failure if the UI ever stops
-            # collecting a served feature rather than a silent bad prediction.
-            input_df = feature_contract.order_columns(pd.DataFrame([payload]))
-            probability = float(pipeline.predict_proba(input_df)[:, 1][0])
-            prediction = int(probability >= threshold)
-
-            # Log inference for monitoring/analytics (uses SQLite locally or DATABASE_URL if set)
-            try:
-                request_id = str(uuid.uuid4())
-                log_inference(
-                    request_id=request_id,
-                    model_variant="A",
-                    model_name="logistic_regression",
-                    probability=probability,
-                    prediction=prediction,
-                    threshold=threshold,
-                    payload=payload,
+            outstanding = missing_features(payload)
+            if outstanding:
+                st.warning(
+                    "Please answer every question before requesting an estimate. "
+                    "Still needed: " + ", ".join(outstanding),
+                    icon=":material/warning:",
                 )
-            except Exception:
-                # Logging must never break the clinical UI; swallow/log errors silently in Streamlit.
-                pass
-        
-            # Results Display
-            st.markdown('<h3 class="section-header">Assessment Results</h3>', unsafe_allow_html=True)
-        
-            # Metrics Row
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Risk Score", f"{probability:.1%}")
-            col2.metric("Classification Threshold", f"{threshold:.1%}")
-            col3.metric("Risk Category", "HIGH" if prediction == 1 else "LOW")
-        
-            # Result Card
-            if prediction == 1:
-                st.markdown("""
-            <div class="risk-high">
-                <strong>⚠️ ELEVATED DIABETES RISK</strong><br>
-                The patient's clinical profile indicates an elevated risk of diabetes. 
-                Recommend further diagnostic evaluation including fasting glucose, HbA1c, 
-                and oral glucose tolerance test (OGTT) as appropriate.
-            </div>
-            """, unsafe_allow_html=True)
             else:
-                st.markdown("""
-            <div class="risk-low">
-                <strong>✓ LOWER DIABETES RISK</strong><br>
-                The patient's clinical profile indicates a lower risk of diabetes based on 
-                the assessed factors. Continue routine screening per clinical guidelines.
-            </div>
-            """, unsafe_allow_html=True)
-        
-            # Risk Factor Summary
-            with st.expander("📊 Factor Analysis"):
-                st.write("**Input Summary:**")
-                summary_df = pd.DataFrame([{
-                    "Factor": k,
-                    "Value": v,
-                    "Description": feature_labels.get(k, k)
-                } for k, v in payload.items()])
-                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                with st.spinner("Calculating your risk estimate..."):
+                    input_df, probability, prediction = score(pipeline, threshold, payload)
 
-            # SHAP Explanation
-            if shap_explainer is not None:
-                with st.expander("🔍 SHAP Feature Contributions (Explainable AI)", expanded=True):
-                    st.caption("How each feature pushed the prediction higher or lower")
-                    shap_vals = shap_explainer.shap_values(input_df)
-                    if isinstance(shap_vals, list):
-                        shap_vals = shap_vals[1]
-                
-                    contributions = pd.DataFrame({
-                        "Feature": feature_columns,
-                        "SHAP Value": shap_vals[0],
-                        "Input Value": [float(input_df.iloc[0][c]) for c in feature_columns],
-                    }).sort_values("SHAP Value", key=abs, ascending=False)
-                
-                    # Horizontal bar chart
-                    chart_df = contributions.set_index("Feature")["SHAP Value"].sort_values()
-                    colors = ["#dc2626" if v > 0 else "#2563eb" for v in chart_df.values]
-                
-                    import matplotlib.pyplot as plt
-                    fig, ax = plt.subplots(figsize=(8, 4))
-                    ax.barh(chart_df.index, chart_df.values, color=colors)
-                    ax.set_xlabel("SHAP Value (impact on prediction)")
-                    ax.axvline(x=0, color="gray", linewidth=0.8)
-                    ax.set_title("Feature Contributions to Risk Score")
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close(fig)
-                
-                    st.caption("🔴 Red = increases diabetes risk | 🔵 Blue = decreases diabetes risk")
-
-                    st.write("**Detailed Values:**")
-                    st.dataframe(contributions, use_container_width=True, hide_index=True)
-
-            # Confidence Intervals
-            if ci_bounds is not None:
-                with st.expander("📈 Model Confidence Intervals (95%)"):
-                    st.caption("Bootstrap-estimated 95% CI from the held-out test set")
-                    ci_df = pd.DataFrame([
-                        {
-                            "Metric": metric.upper(),
-                            "Mean": f"{vals['mean']:.4f}",
-                            "95% CI Lower": f"{vals['ci_lower']:.4f}",
-                            "95% CI Upper": f"{vals['ci_upper']:.4f}",
+                    shap_by_feature = {}
+                    if shap_explainer is not None:
+                        shap_values = shap_explainer.shap_values(input_df)
+                        if isinstance(shap_values, list):
+                            shap_values = shap_values[1]
+                        shap_by_feature = {
+                            name: float(value)
+                            for name, value in zip(feature_columns, shap_values[0])
                         }
-                        for metric, vals in ci_bounds.items()
-                    ])
-                    st.dataframe(ci_df, use_container_width=True, hide_index=True)
-        
-            # Disclaimer
-            st.markdown("""
-        <div class="disclaimer">
-            <strong>⚕️ Clinical Disclaimer:</strong> This tool is intended for clinical decision 
-            support only and should not replace professional medical judgment. All diagnostic and 
-            treatment decisions should be made by qualified healthcare providers in consultation 
-            with the patient.
-        </div>
-        """, unsafe_allow_html=True)
 
-    with tab_info:
-        st.markdown('<h3 class="section-header">About This Assessment Tool</h3>', unsafe_allow_html=True)
-    
-        st.markdown("""
-    This diabetes risk assessment system uses a logistic regression model trained on 
-    population health survey data to estimate the probability of diabetes based on 
-    clinical and lifestyle factors.
-    
-    ### Model Methodology
-    
-    - **Algorithm:** Logistic Regression with L2 regularization
-    - **Hyperparameter Optimization:** Optuna (100 trials, 5-fold CV)
-    - **Threshold Selection:** Youden's J statistic (maximizes sensitivity + specificity)
-    - **Probability Calibration:** Platt scaling via CalibratedClassifierCV
-    - **Explainability:** SHAP (SHapley Additive exPlanations) feature contributions
-    - **Confidence Intervals:** 200-iteration bootstrap on held-out test set
-    - **Drift Monitoring:** Training-set baseline statistics for input validation
-    - **Validation:** Separate train/validation/test splits to prevent data leakage
-    
-    ### Risk Factors Assessed
-    
-    | Factor | Description |
-    |--------|-------------|
-    | General Health | Self-reported overall health status (1-5 scale) |
-    | High Blood Pressure | History of hypertension diagnosis |
-    | BMI | Body Mass Index (kg/m²) |
-    | High Cholesterol | History of hypercholesterolemia |
-    | Age Category | Age group (13 categories from 18-24 to 80+) |
-    | Difficulty Walking | Mobility impairment indicator |
-    | Heart Disease/Attack | History of CHD or myocardial infarction |
-    | Poor Physical Health Days | Days of poor physical health in past month |
-    | Education Level | Highest education attained (6 levels) |
-    | Physical Activity | Non-occupational physical activity |
-    
-    ### Interpretation Guidelines
-    
-    - **Risk Score:** Probability of diabetes (0-100%)
-    - **Threshold:** Model-optimized cutoff for classification (Youden's J)
-    - **HIGH Risk:** Score ≥ threshold - recommend confirmatory testing
-    - **LOW Risk:** Score < threshold - continue routine screening
-    
-    ### Limitations
-    
-    - This tool assesses risk based on survey-derived features only
-    - Does not incorporate laboratory values (glucose, HbA1c)
-    - Should be used as screening support, not diagnostic confirmation
-    - Population-level model may not capture individual variability
-    """)
-    
-        st.markdown("""
-    <div class="disclaimer">
-        <strong>Data Source:</strong> Model trained on CDC Behavioral Risk Factor 
-        Surveillance System (BRFSS) data focusing on diabetes-related health indicators.
-    </div>
-    """, unsafe_allow_html=True)
+                    try:
+                        log_inference(
+                            request_id=str(uuid.uuid4()),
+                            model_variant=MODEL_VARIANT,
+                            model_name=model_name,
+                            probability=probability,
+                            prediction=prediction,
+                            threshold=threshold,
+                            payload=payload,
+                        )
+                    except Exception:
+                        # Monitoring must never break the assessment for a visitor.
+                        pass
+
+                st.session_state["assessment_result"] = {
+                    "probability": probability,
+                    "prediction": prediction,
+                    "threshold": threshold,
+                    "answers": answers,
+                    "shap": shap_by_feature,
+                    "model_name": model_name,
+                    "model_variant": MODEL_VARIANT,
+                }
+
+        # Rendered from session state, so a rerun that is not a submission
+        # (switching tabs, resizing) does not erase the visitor's result.
+        result = st.session_state.get("assessment_result")
+        if result is not None:
+            st.header("Your result")
+            render_result(result)
+            render_answers(result)
+            render_explanation(result, explainer_available=bool(result["shap"]))
+            render_performance(metrics)
+            render_model_details(result, attestation)
+
+    with tab_about:
+        render_about_tab(metrics)
 
 
 if __name__ == "__main__":
