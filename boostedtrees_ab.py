@@ -23,7 +23,7 @@ from sklearn.metrics import (
 )
 from xgboost import XGBClassifier
 
-from ml_core import provenance
+from ml_core import feature_contract, provenance
 from ml_core import (
     bootstrap_confidence_interval,
     compute_youden_threshold,
@@ -51,32 +51,12 @@ PROVENANCE_PATH = ARTIFACTS_DIR / "boosted_training_manifest.json"
 N_BOOTSTRAP = 200
 
 # Same features as logistic regression (for A/B testing consistency)
-SELECTED_FEATURES = [
-    "GenHlth",
-    "HighBP",
-    "BMI",
-    "HighChol",
-    "Age",
-    "DiffWalk",
-    "HeartDiseaseorAttack",
-    "PhysHlth",
-    "Education",
-    "PhysActivity",
-]
-TARGET_COLUMN = "Diabetes_binary"
-
-FEATURE_LABELS = {
-    "GenHlth": "General Health (1=Excellent to 5=Poor)",
-    "HighBP": "Has High Blood Pressure",
-    "BMI": "Body Mass Index",
-    "HighChol": "Has High Cholesterol",
-    "Age": "Age Category (1=18-24 to 13=80+)",
-    "DiffWalk": "Has Walking Difficulty",
-    "HeartDiseaseorAttack": "Has Heart Disease or Had Heart Attack",
-    "PhysHlth": "Poor Physical Health Days (last 30 days)",
-    "Education": "Education Level (1-6)",
-    "PhysActivity": "Is Physically Active",
-}
+# Feature names, order, labels and the target column come from the single
+# canonical contract. They used to be maintained separately in each pipeline,
+# in app.py and in streamlit_app.py.
+SELECTED_FEATURES = feature_contract.feature_list()
+TARGET_COLUMN = feature_contract.TARGET_COLUMN
+FEATURE_LABELS = dict(feature_contract.FEATURE_LABELS)
 
 
 def compute_drift_baseline(X_train: pd.DataFrame) -> dict:
@@ -351,7 +331,9 @@ def main() -> None:
         model_name="xgboost_boosted_trees",
         dataset_path=DATA_PATH,
         target_column=TARGET_COLUMN,
-        feature_names=SELECTED_FEATURES,
+        # Straight from the canonical contract, so the schema hash can never
+        # describe a feature list the models were not trained on.
+        feature_names=list(feature_contract.FEATURE_NAMES),
         training={
             "random_state": RANDOM_STATE,
             "test_size": 0.2,

@@ -18,6 +18,7 @@ import pandas as pd
 import streamlit as st
 
 from inference_db import log_inference
+from ml_core import feature_contract
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -220,8 +221,8 @@ def main() -> None:
             with col2:
                 bmi = st.number_input(
                     "BMI (kg/m²)",
-                    min_value=10.0,
-                    max_value=80.0,
+                    min_value=float(feature_contract.spec_for("BMI").minimum),
+                    max_value=float(feature_contract.spec_for("BMI").maximum),
                     value=27.0,
                     step=0.1,
                     help="Body Mass Index"
@@ -229,8 +230,8 @@ def main() -> None:
             with col3:
                 phys_hlth = st.number_input(
                     "Poor Physical Health Days",
-                    min_value=0,
-                    max_value=30,
+                    min_value=int(feature_contract.spec_for("PhysHlth").minimum),
+                    max_value=int(feature_contract.spec_for("PhysHlth").maximum),
                     value=0,
                     help="Days in past 30 with poor physical health"
                 )
@@ -301,7 +302,9 @@ def main() -> None:
                 "PhysActivity": binary_yes_no[phys_activity_label],
             }
         
-            input_df = pd.DataFrame([payload])[feature_columns]
+            # Canonical order, and a hard failure if the UI ever stops
+            # collecting a served feature rather than a silent bad prediction.
+            input_df = feature_contract.order_columns(pd.DataFrame([payload]))
             probability = float(pipeline.predict_proba(input_df)[:, 1][0])
             prediction = int(probability >= threshold)
 

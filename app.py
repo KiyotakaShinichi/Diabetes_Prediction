@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from inference_db import fetch_recent_logs, init_db, log_inference
+from ml_core import feature_contract
 
 logger = logging.getLogger("diabetes_api")
 
@@ -295,11 +296,21 @@ def predict(
     except (KeyError, TypeError, ValueError) as exc:
         raise ArtifactUnavailableError(f"bundle at {bundle_path} is missing required keys") from exc
 
+    # The bundle records the feature order it was trained on. Serving orders
+    # columns from the canonical contract, so a bundle that disagrees would be
+    # scored on silently misaligned columns - refuse instead.
+    if list(feature_columns) != list(feature_contract.FEATURE_NAMES):
+        raise ArtifactUnavailableError(
+            f"bundle at {bundle_path} declares a feature order that differs from the contract"
+        )
+
     # Score. Anything that goes wrong here is an inference failure, not a
     # validation problem: the payload already passed Pydantic.
     payload_dict = payload.model_dump()
     try:
-        input_df = pd.DataFrame([payload_dict])[feature_columns]
+        # Order the columns from the canonical contract, never from JSON key
+        # order or Pydantic field order.
+        input_df = feature_contract.order_columns(pd.DataFrame([payload_dict]))
         probability = float(pipeline.predict_proba(input_df)[:, 1][0])
     except Exception as exc:
         raise InferenceError(f"scoring failed for variant {selected_variant}") from exc
@@ -392,7 +403,7 @@ def explain(
         raise ArtifactUnavailableError(f"bundle at {bundle_path} is missing required keys") from exc
 
     payload_dict = payload.model_dump()
-    input_df = pd.DataFrame([payload_dict])[feature_columns]
+    input_df = feature_contract.order_columns(pd.DataFrame([payload_dict]))
 
     probability = float(pipeline.predict_proba(input_df)[:, 1][0])
     prediction = int(probability >= threshold)
