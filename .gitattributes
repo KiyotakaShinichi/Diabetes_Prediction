@@ -1,0 +1,17 @@
+# Normalise line endings to LF in the working tree on every platform.
+#
+# This is an integrity requirement, not a style preference. The provenance
+# system hashes the model artifacts, the dataset, the lockfiles and the training
+# source files. With git's autocrlf translation those files carry CRLF on
+# Windows and LF on Linux, so an attestation generated on one platform cannot
+# verify on the other - which is exactly how CI failed when the attestation was
+# first committed.
+* text=auto eol=lf
+
+# Binary artifacts: never translated, never diffed as text.
+*.pkl binary
+*.tfevents binary
+
+# Belt and braces for the files the attestation hashes directly.
+model_artifacts/** -text
+cleaned_data.csv -text

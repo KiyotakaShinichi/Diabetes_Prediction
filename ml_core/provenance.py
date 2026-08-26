@@ -314,7 +314,9 @@ def write_manifest(manifest: dict, path: str | Path) -> Path:
 
     descriptor, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        # Force LF so a manifest written on Windows is byte-identical to one
+        # written on Linux; manifests are compared and hashed across platforms.
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())

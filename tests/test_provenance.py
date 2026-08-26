@@ -575,3 +575,46 @@ def test_pipeline_manifest_path_follows_an_overridden_artifacts_dir(pipeline):
     source = (REPO_ROOT / pipeline).read_text(encoding="utf-8")
 
     assert source.count("PROVENANCE_PATH = ARTIFACTS_DIR / ") == 2
+
+
+# ============================================ platform-stable byte hashing
+
+def test_attested_hashes_match_the_committed_blob_bytes():
+    """Regression: an attestation must verify on any platform, not just Windows.
+
+    git's autocrlf translation gave the text artifacts (metrics.json,
+    boosted_metrics.json, test_predictions.csv) CRLF in a Windows working tree
+    and LF in the repository, so an attestation generated on Windows failed on
+    Linux CI. .gitattributes now pins these paths to no translation. Comparing
+    the attested hash against the *blob* bytes catches any regression without
+    needing a second platform.
+    """
+    for entry in _load(ATTESTATION_PATH)["artifacts"]:
+        blob = subprocess.run(
+            ["git", "show", f"HEAD:{entry['path']}"],
+            cwd=REPO_ROOT, capture_output=True, check=True,
+        ).stdout
+        import hashlib
+
+        assert hashlib.sha256(blob).hexdigest() == entry["sha256"], (
+            f"{entry['path']}: attested hash differs from the committed bytes, "
+            "so this attestation would fail on another platform"
+        )
+
+
+def test_gitattributes_pins_the_hashed_paths():
+    rules = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert "model_artifacts/** -text" in rules
+    assert "cleaned_data.csv -text" in rules
+    assert "eol=lf" in rules
+
+
+def test_manifests_are_written_with_lf_endings(tmp_path):
+    """Manifests are compared byte-wise by --check, so endings must not vary."""
+    target = tmp_path / "m.json"
+    provenance.write_manifest({"schema_version": 1, "artifacts": []}, target)
+
+    raw = target.read_bytes()
+    assert b"\r\n" not in raw
+    assert b"\n" in raw
