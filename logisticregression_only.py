@@ -448,11 +448,12 @@ def emit_provenance(
     val_metrics: dict,
     test_metrics: dict,
     ci_results: dict,
+    project_root: Path = PROJECT_ROOT,
 ) -> Path:
     """Written LAST, after every artifact above is on disk, so its hashes attest
     to completed outputs. If anything above failed, no manifest is produced."""
     written = provenance.emit_training_manifest(
-        project_root=PROJECT_ROOT,
+        project_root=project_root,
         output_path=paths["provenance"],
         variant="A",
         model_name="logistic_regression",
@@ -480,7 +481,7 @@ def emit_provenance(
             "selected_threshold": threshold,
             "n_bootstrap": N_BOOTSTRAP,
             "bootstrap_alpha": 0.05,
-            "artifacts_dir": provenance.relative_path(artifacts_dir, PROJECT_ROOT),
+            "artifacts_dir": provenance.relative_path(artifacts_dir, project_root),
         },
         evaluation={
             "validation_metrics": val_metrics,
@@ -494,7 +495,7 @@ def emit_provenance(
             ("metrics", paths["metrics"], True),
             ("test_predictions", paths["test_predictions"], False),
         ],
-        source_files=[
+        source_files=[] if project_root != PROJECT_ROOT else [
             Path(__file__).resolve(),
             PROJECT_ROOT / "ml_core" / "evaluation.py",
             PROJECT_ROOT / "ml_core" / "bootstrap.py",
@@ -503,7 +504,8 @@ def emit_provenance(
             PROJECT_ROOT / "ml_core" / "feature_contract.py",
             PROJECT_ROOT / "ml_core" / "provenance.py",
         ],
-        lockfile=PROJECT_ROOT / "requirements.lock",
+        lockfile=(PROJECT_ROOT / "requirements.lock"
+                  if project_root == PROJECT_ROOT else None),
     )
     print(f"💾 Provenance manifest saved: {written}")
     return written
