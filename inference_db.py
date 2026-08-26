@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
 import os
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,36 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # Runtime SQLite log. Gitignored, and resolved at call time rather than bound
 # into function defaults so tests can redirect it to a temporary file.
 DB_PATH = PROJECT_ROOT / "data" / "inference_logs.db"
+
+#: Column added after the original schema shipped. Every migration here must be
+#: additive and idempotent: existing databases are opened in place, old rows keep
+#: NULL, and nothing is ever dropped or rewritten.
+ASSIGNMENT_COLUMN = "assignment_key_hash"
+
+
+def hash_assignment_key(assignment_key: str) -> str:
+    """One-way digest of the A/B assignment key.
+
+    This identifies an *experiment assignment*, not a user. The public UI sends a
+    random per-session value and the API defaults to "anonymous", so nothing here
+    is an authenticated identity - but the raw key is still never stored, so a
+    stored row cannot be matched back against a value a client still holds.
+
+    SHA-256 is deterministic, which is the whole point: the same assignment key
+    must always produce the same digest, or stability of an assignment could not
+    be verified after the fact.
+    """
+    return hashlib.sha256(assignment_key.encode("utf-8")).hexdigest()
+
+
+def backend_name() -> str:
+    """Which store is in use, with nothing sensitive attached.
+
+    Deliberately returns only the engine. Host, user, password, DSN and file path
+    are all configuration and none of them belong on a dashboard; the purpose is
+    to explain why a dashboard is empty, not to describe the deployment.
+    """
+    return "PostgreSQL" if _use_postgres() else "SQLite"
 
 
 def _get_database_url() -> str:
@@ -93,6 +125,12 @@ def init_db(db_path: Path | None = None) -> None:
                     ON inference_logs(created_at DESC)
                     """
                 )
+                # Additive migration. Existing deployments gain the column with
+                # NULL for every historical row; nothing is rewritten.
+                cur.execute(
+                    f"ALTER TABLE inference_logs "
+                    f"ADD COLUMN IF NOT EXISTS {ASSIGNMENT_COLUMN} TEXT"
+                )
             conn.commit()
         return
 
@@ -119,6 +157,12 @@ def init_db(db_path: Path | None = None) -> None:
             ON inference_logs(created_at DESC)
             """
         )
+        # SQLite's ALTER TABLE has no IF NOT EXISTS, so the column list decides.
+        # Re-running this is a no-op, which is what makes init_db safe to call on
+        # every read and write the way the rest of this module does.
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(inference_logs)")}
+        if ASSIGNMENT_COLUMN not in existing:
+            conn.execute(f"ALTER TABLE inference_logs ADD COLUMN {ASSIGNMENT_COLUMN} TEXT")
 
 
 def log_inference(
@@ -130,9 +174,17 @@ def log_inference(
     threshold: float,
     payload: dict[str, Any],
     db_path: Path | None = None,
+    assignment_key: str | None = None,
 ) -> None:
+    """Record one served inference.
+
+    ``assignment_key`` is the value the A/B router bucketed on. Only its digest
+    is stored, and omitting it leaves the column NULL, which is exactly what
+    every row written before this column existed looks like.
+    """
     db_path = DB_PATH if db_path is None else db_path
     init_db(db_path)
+    assignment_hash = hash_assignment_key(assignment_key) if assignment_key else None
 
     if _use_postgres():
         import psycopg
@@ -148,8 +200,9 @@ def log_inference(
                         probability,
                         prediction,
                         threshold,
-                        payload_json
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        payload_json,
+                        assignment_key_hash
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         request_id,
@@ -159,6 +212,7 @@ def log_inference(
                         prediction,
                         threshold,
                         json.dumps(payload),
+                        assignment_hash,
                     ),
                 )
             conn.commit()
@@ -174,8 +228,9 @@ def log_inference(
                 probability,
                 prediction,
                 threshold,
-                payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                payload_json,
+                assignment_key_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request_id,
@@ -185,6 +240,7 @@ def log_inference(
                 prediction,
                 threshold,
                 json.dumps(payload),
+                assignment_hash,
             ),
         )
 
@@ -245,3 +301,83 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
         item["payload"] = _decode_payload(item.pop("payload_json", None), item.get("id"))
         result.append(item)
     return result
+
+
+#: Columns every read returns, in a fixed order so both backends agree.
+_SELECT_COLUMNS = (
+    "id, request_id, model_variant, model_name, probability, "
+    "prediction, threshold, payload_json, created_at, assignment_key_hash"
+)
+
+
+def _window_start(hours: int | None) -> str | None:
+    """UTC cutoff for a rolling window, formatted the way rows are stored."""
+    if not hours:
+        return None
+    return (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    item["created_at"] = str(item.get("created_at"))
+    item["payload"] = _decode_payload(item.pop("payload_json", None), item.get("id"))
+    return item
+
+
+def fetch_logs(
+    limit: int = 100,
+    db_path: Path | None = None,
+    *,
+    within_hours: int | None = None,
+    model_variant: str | None = None,
+    prediction: int | None = None,
+) -> list[dict[str, Any]]:
+    """Recent inferences, filtered in SQL rather than in pandas.
+
+    Every filter is applied by the database so a dashboard narrowing to one
+    variant or one day does not first pull the whole table into memory. Filters
+    compose, and omitting all of them is exactly ``fetch_recent_logs``.
+
+    Values are always bound as parameters; only fixed column names are ever
+    interpolated into the statement.
+    """
+    db_path = DB_PATH if db_path is None else db_path
+    init_db(db_path)
+
+    clauses: list[str] = []
+    values: list[Any] = []
+    cutoff = _window_start(within_hours)
+    if cutoff is not None:
+        clauses.append("created_at >= ?")
+        values.append(cutoff)
+    if model_variant:
+        clauses.append("model_variant = ?")
+        values.append(model_variant)
+    if prediction is not None:
+        clauses.append("prediction = ?")
+        values.append(int(prediction))
+
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    # Suppression rationale: the only interpolated pieces are _SELECT_COLUMNS and
+    # the fixed clause strings assembled directly above - both are literals in
+    # this module. Every value, including the limit, is bound as a parameter and
+    # never formatted into the statement.
+    statement = (
+        f"SELECT {_SELECT_COLUMNS} FROM inference_logs{where} ORDER BY id DESC LIMIT ?"  # noqa: S608
+    )
+    values.append(limit)
+
+    if _use_postgres():
+        import psycopg
+
+        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+            cur.execute(statement.replace("?", "%s"), tuple(values))
+            columns = [description[0] for description in cur.description]
+            rows = [dict(zip(columns, record, strict=True)) for record in cur.fetchall()]
+        return [_row_to_dict(row) for row in rows]
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(statement, tuple(values)).fetchall()
+
+    return [_row_to_dict(row) for row in rows]
