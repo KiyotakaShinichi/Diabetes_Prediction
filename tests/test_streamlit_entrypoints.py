@@ -69,7 +69,12 @@ def test_importing_renders_no_widgets(module):
 
 
 def test_importing_streamlit_app_loads_no_model():
-    """Model loading moved into main(); import must not touch the artifacts."""
+    """The public app owns no model at all now - not even a loader.
+
+    Scoring moved behind the inference API, so there is no bundle path, no
+    pipeline and no explainer in this module. What remains is static metadata
+    (committed metrics, the artifact attestation) and the API client factory.
+    """
     import streamlit_app
 
     importlib.reload(streamlit_app)
@@ -77,9 +82,11 @@ def test_importing_streamlit_app_loads_no_model():
     assert not hasattr(streamlit_app, "pipeline")
     assert not hasattr(streamlit_app, "shap_explainer")
     assert not hasattr(streamlit_app, "tab_assess")
-    # The path constants and the loader functions stay importable.
-    assert streamlit_app.MODEL_BUNDLE_PATH.is_file()
-    assert callable(streamlit_app.load_model)
+    assert not hasattr(streamlit_app, "load_model")
+    assert not hasattr(streamlit_app, "MODEL_BUNDLE_PATH")
+    # Static metadata and the client seam stay importable.
+    assert streamlit_app.METRICS_PATH.is_file()
+    assert callable(streamlit_app.build_client)
 
 
 def test_importing_admin_app_configures_no_page():

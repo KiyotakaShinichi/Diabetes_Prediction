@@ -1,0 +1,152 @@
+{
+  "fixtures": [
+    {
+      "Age": 2,
+      "BMI": 21.0,
+      "DiffWalk": 0,
+      "Education": 6,
+      "GenHlth": 1,
+      "HeartDiseaseorAttack": 0,
+      "HighBP": 0,
+      "HighChol": 0,
+      "PhysActivity": 1,
+      "PhysHlth": 0
+    },
+    {
+      "Age": 7,
+      "BMI": 28.0,
+      "DiffWalk": 0,
+      "Education": 5,
+      "GenHlth": 3,
+      "HeartDiseaseorAttack": 0,
+      "HighBP": 1,
+      "HighChol": 0,
+      "PhysActivity": 1,
+      "PhysHlth": 2
+    },
+    {
+      "Age": 11,
+      "BMI": 41.5,
+      "DiffWalk": 1,
+      "Education": 2,
+      "GenHlth": 5,
+      "HeartDiseaseorAttack": 1,
+      "HighBP": 1,
+      "HighChol": 1,
+      "PhysActivity": 0,
+      "PhysHlth": 30
+    },
+    {
+      "Age": 9,
+      "BMI": 33.2,
+      "DiffWalk": 0,
+      "Education": 4,
+      "GenHlth": 4,
+      "HeartDiseaseorAttack": 0,
+      "HighBP": 1,
+      "HighChol": 1,
+      "PhysActivity": 0,
+      "PhysHlth": 12
+    },
+    {
+      "Age": 4,
+      "BMI": 24.4,
+      "DiffWalk": 0,
+      "Education": 6,
+      "GenHlth": 2,
+      "HeartDiseaseorAttack": 0,
+      "HighBP": 0,
+      "HighChol": 0,
+      "PhysActivity": 1,
+      "PhysHlth": 1
+    }
+  ],
+  "variants": {
+    "A": {
+      "feature_columns": [
+        "GenHlth",
+        "HighBP",
+        "BMI",
+        "HighChol",
+        "Age",
+        "DiffWalk",
+        "HeartDiseaseorAttack",
+        "PhysHlth",
+        "Education",
+        "PhysActivity"
+      ],
+      "model_name": "logistic_regression",
+      "results": [
+        {
+          "prediction": 0,
+          "probability": 0.02237599677035116,
+          "risk_category": "LOW"
+        },
+        {
+          "prediction": 0,
+          "probability": 0.4052207359963401,
+          "risk_category": "LOW"
+        },
+        {
+          "prediction": 1,
+          "probability": 0.9776387116874243,
+          "risk_category": "HIGH"
+        },
+        {
+          "prediction": 1,
+          "probability": 0.8309345414375258,
+          "risk_category": "HIGH"
+        },
+        {
+          "prediction": 0,
+          "probability": 0.07142865215593883,
+          "risk_category": "LOW"
+        }
+      ],
+      "threshold": 0.45567194245038106
+    },
+    "B": {
+      "feature_columns": [
+        "GenHlth",
+        "HighBP",
+        "BMI",
+        "HighChol",
+        "Age",
+        "DiffWalk",
+        "HeartDiseaseorAttack",
+        "PhysHlth",
+        "Education",
+        "PhysActivity"
+      ],
+      "model_name": "xgboost_boosted_trees",
+      "results": [
+        {
+          "prediction": 0,
+          "probability": 0.07735622797149247,
+          "risk_category": "LOW"
+        },
+        {
+          "prediction": 0,
+          "probability": 0.4073903354341553,
+          "risk_category": "LOW"
+        },
+        {
+          "prediction": 1,
+          "probability": 0.8978053584802069,
+          "risk_category": "HIGH"
+        },
+        {
+          "prediction": 1,
+          "probability": 0.8445618716101209,
+          "risk_category": "HIGH"
+        },
+        {
+          "prediction": 0,
+          "probability": 0.09355045018347866,
+          "risk_category": "LOW"
+        }
+      ],
+      "threshold": 0.5237521529197693
+    }
+  }
+}

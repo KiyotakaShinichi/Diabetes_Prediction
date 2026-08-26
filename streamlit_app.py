@@ -2,9 +2,11 @@
 Diabetes Risk Assessment
 Educational risk-estimation tool. Not a diagnostic device.
 
-Page orchestration only: page config, artifact loading, scoring, monitoring and
-the order the sections appear in. Every section is rendered by ui.public_components,
-which never loads a model or scores a request.
+Page orchestration only. This app renders and collects; it does not score.
+Every prediction comes from the inference API through ui.api_client, which is
+the single authoritative serving path - the same one that enforces canonical
+feature order, validates the model bundle, routes A/B, correlates requests and
+sanitises errors. No model artifact is loaded here for inference.
 
 Run with: streamlit run streamlit_app.py
 """
@@ -13,57 +15,27 @@ import json
 import uuid
 from pathlib import Path
 
-import joblib
-import pandas as pd
 import streamlit as st
 
-from inference_db import log_inference
-from ml_core import feature_contract
-from ui import public_components, theme
+from ui import api_client, public_components, theme
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
 
-MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "model_bundle.pkl"
-
-SHAP_EXPLAINER_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
-
+#: Static evaluation metadata, not inference. Read from disk because it
+#: describes the training run rather than any individual request.
 METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
 
 ATTESTATION_PATH = PROJECT_ROOT / "provenance" / "legacy_artifact_attestation.json"
 
-#: The served variant behind this UI. Variant B is reachable through the API.
-MODEL_VARIANT = "A"
-
 #: Where the completed assessment lives between reruns.
 RESULT_KEY = "assessment_result"
 
-
-@st.cache_resource
-def load_model():
-    if not MODEL_BUNDLE_PATH.exists():
-        return None, None, None, None, None
-    bundle = joblib.load(MODEL_BUNDLE_PATH)
-    return (
-        bundle["pipeline"],
-        float(bundle["threshold"]),
-        bundle["feature_columns"],
-        bundle.get("model_name", "unknown"),
-        bundle.get("confidence_intervals"),
-    )
-
-
-@st.cache_resource
-def load_shap_explainer():
-    if not SHAP_EXPLAINER_PATH.exists():
-        return None, None, None
-    shap_bundle = joblib.load(SHAP_EXPLAINER_PATH)
-    return (
-        shap_bundle["explainer"],
-        shap_bundle["expected_value"],
-        shap_bundle["feature_names"],
-    )
+#: Stable per-session identifier, sent to the API so its deterministic A/B
+#: bucketing gives one visitor a consistent variant across submissions. The UI
+#: never derives a variant from it - the API decides and reports back.
+VISITOR_KEY = "visitor_id"
 
 
 @st.cache_data
@@ -92,23 +64,54 @@ def load_artifact_attestation() -> dict:
         return json.load(handle)
 
 
-def score(pipeline, threshold: float, payload: dict) -> tuple[pd.DataFrame, float, int]:
-    """Canonical column order, then one scoring call. No UI, no logging."""
-    input_df = feature_contract.order_columns(pd.DataFrame([payload]))
-    probability = float(pipeline.predict_proba(input_df)[:, 1][0])
-    return input_df, probability, int(probability >= threshold)
+def build_client() -> api_client.DiabetesApiClient:
+    """One client per rerun, so configuration changes take effect immediately."""
+    return api_client.DiabetesApiClient()
 
 
-def explain(explainer, feature_columns, input_df: pd.DataFrame) -> dict:
-    """SHAP contribution per feature, or {} when no explainer is deployed."""
-    if explainer is None:
-        return {}
-    shap_values = explainer.shap_values(input_df)
-    if isinstance(shap_values, list):
-        shap_values = shap_values[1]
+def visitor_id() -> str:
+    """A stable id for this browser session, created on first use."""
+    if VISITOR_KEY not in st.session_state:
+        st.session_state[VISITOR_KEY] = str(uuid.uuid4())
+    return st.session_state[VISITOR_KEY]
+
+
+def request_assessment(client: api_client.DiabetesApiClient, payload: dict) -> dict:
+    """Score, then explain, and shape the result the UI renders.
+
+    The explanation is a secondary concern: if it fails the estimate still
+    stands, and the UI shows its explicit "unavailable" state rather than
+    discarding a valid result. A scoring failure, by contrast, propagates.
+    """
+    prediction = client.predict(payload, user_id=visitor_id())
+
+    try:
+        explanation = client.explain(payload, model_variant=prediction.model_variant)
+        contributions = explanation.by_feature()
+    except api_client.ApiError:
+        contributions = {}
+
     return {
-        name: float(value) for name, value in zip(feature_columns, shap_values[0])
+        "probability": prediction.probability,
+        "prediction": prediction.prediction,
+        "risk_category": prediction.risk_category,
+        "threshold": prediction.threshold,
+        "model_name": prediction.model_name,
+        "model_variant": prediction.model_variant,
+        "request_id": prediction.request_id,
+        "confidence_intervals": prediction.confidence_intervals,
+        "shap": contributions,
     }
+
+
+def report_failure(error: api_client.ApiError) -> None:
+    """Show a visitor-safe message, with the correlation id when there is one."""
+    st.error(error.user_message, icon=":material/error:")
+    if error.request_id:
+        st.caption(
+            "If you report this, quote reference "
+            f"`{error.request_id}` so it can be traced in the service log."
+        )
 
 
 def main() -> None:
@@ -117,7 +120,7 @@ def main() -> None:
     Streamlit executes the script with __name__ == "__main__" (verified
     against streamlit.testing AppTest), so this runs under
     `streamlit run streamlit_app.py` while a plain import stays free of UI
-    side effects - no page config, no CSS injection, no model loading.
+    side effects - no page config, no CSS injection, no network calls.
     """
     st.set_page_config(
         page_title="Diabetes Risk Assessment",
@@ -128,20 +131,11 @@ def main() -> None:
 
     theme.inject_css()
 
-    pipeline, threshold, feature_columns, model_name, confidence_intervals = load_model()
-    shap_explainer, _shap_expected, _shap_features = load_shap_explainer()
     metrics = load_evaluation_metrics()
     attestation = load_artifact_attestation()
+    client = build_client()
 
     public_components.render_header()
-
-    if pipeline is None:
-        st.error(
-            "The risk model is not available, so no assessment can be made. "
-            "If you are running this locally, train the model first with "
-            "`python logisticregression_only.py`."
-        )
-        st.stop()
 
     tab_assess, tab_about = st.tabs(["Risk assessment", "About this tool"])
 
@@ -167,32 +161,13 @@ def main() -> None:
                 )
             else:
                 with st.spinner("Calculating your risk estimate..."):
-                    input_df, probability, prediction = score(pipeline, threshold, payload)
-                    shap_by_feature = explain(shap_explainer, feature_columns, input_df)
-
                     try:
-                        log_inference(
-                            request_id=str(uuid.uuid4()),
-                            model_variant=MODEL_VARIANT,
-                            model_name=model_name,
-                            probability=probability,
-                            prediction=prediction,
-                            threshold=threshold,
-                            payload=payload,
-                        )
-                    except Exception:
-                        # Monitoring must never break the assessment for a visitor.
-                        pass
-
-                st.session_state[RESULT_KEY] = {
-                    "probability": probability,
-                    "prediction": prediction,
-                    "threshold": threshold,
-                    "answers": answers,
-                    "shap": shap_by_feature,
-                    "model_name": model_name,
-                    "model_variant": MODEL_VARIANT,
-                }
+                        result = request_assessment(client, payload)
+                    except api_client.ApiError as error:
+                        report_failure(error)
+                    else:
+                        result["answers"] = answers
+                        st.session_state[RESULT_KEY] = result
 
         # Rendered from session state, so a rerun that is not a submission
         # (switching tabs, resizing) does not erase the visitor's result.
@@ -202,7 +177,9 @@ def main() -> None:
             public_components.render_result(result)
             public_components.render_answers(result)
             public_components.render_explanation_panel(result)
-            public_components.render_performance_panel(metrics, confidence_intervals)
+            public_components.render_performance_panel(
+                metrics, result.get("confidence_intervals")
+            )
             public_components.render_model_details(result, attestation)
 
     with tab_about:
