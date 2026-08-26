@@ -571,10 +571,18 @@ def test_pipeline_emits_a_manifest_as_its_final_step(pipeline, manifest_name):
     "pipeline", ["logisticregression_only.py", "boostedtrees_ab.py"]
 )
 def test_pipeline_manifest_path_follows_an_overridden_artifacts_dir(pipeline):
-    """--artifacts-dir must relocate the manifest along with the artifacts."""
+    """--artifacts-dir must relocate the manifest along with the artifacts.
+
+    Output filenames now live in a single artifact_paths(artifacts_dir) helper,
+    so every path - the manifest included - derives from the directory actually
+    passed in. Previously the same constants were rebound in two places and
+    could half-relocate.
+    """
     source = (REPO_ROOT / pipeline).read_text(encoding="utf-8")
 
-    assert source.count("PROVENANCE_PATH = ARTIFACTS_DIR / ") == 2
+    assert "def artifact_paths(artifacts_dir: Path)" in source
+    assert '"provenance": artifacts_dir / ' in source
+    assert "output_path=paths[\"provenance\"]" in source
 
 
 # ============================================ platform-stable byte hashing

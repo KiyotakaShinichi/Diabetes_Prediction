@@ -439,8 +439,8 @@ def test_drift_baselines_are_not_merged():
     lr = (REPO_ROOT / "logisticregression_only.py").read_text(encoding="utf-8")
     xgb = (REPO_ROOT / "boostedtrees_ab.py").read_text(encoding="utf-8")
 
-    assert "def compute_drift_baseline(" in lr
-    assert "def compute_drift_baseline(" in xgb
+    assert "def build_logistic_drift_baseline(" in lr
+    assert "def build_boosted_drift_baseline(" in xgb
     assert not (REPO_ROOT / "ml_core" / "drift.py").exists()
 
 

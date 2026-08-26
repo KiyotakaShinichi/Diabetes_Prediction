@@ -4,10 +4,17 @@
 XGBoost model for diabetes prediction - A/B testing variant B.
 
 Uses the same feature set as logistic regression for consistent comparison.
+
+The lifecycle is decomposed into independently callable stages - prepare,
+optimize, fit, calibrate, evaluate, explain, persist, attest - so each can be
+exercised without running the full 50-trial study. main() is orchestration only.
+
+Deliberately NOT forced into the logistic pipeline's abstractions: this variant
+has no scaler, uses a TreeExplainer rather than a LinearExplainer, and emits a
+different drift-baseline schema. Those are real differences, not incidental ones.
 """
 from pathlib import Path
 import argparse
-import json
 import warnings
 
 import joblib
@@ -16,15 +23,17 @@ import pandas as pd
 import optuna
 import shap
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import (
     brier_score_loss,
     classification_report,
 )
 from xgboost import XGBClassifier
 
-from ml_core import feature_contract, provenance
-from ml_core import (
+from ml_core import feature_contract, provenance, training
+# evaluate_predictions is re-exported deliberately: tests treat the pipeline
+# module as the surface for the shared evaluation helpers.
+from ml_core import (  # noqa: F401
     bootstrap_confidence_interval,
     compute_youden_threshold,
     evaluate_predictions,
@@ -42,15 +51,20 @@ RANDOM_STATE = 42
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_PATH = PROJECT_ROOT / "cleaned_data.csv"
 ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
-MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
-METRICS_PATH = ARTIFACTS_DIR / "boosted_metrics.json"
-SHAP_PATH = ARTIFACTS_DIR / "boosted_shap_explainer.pkl"
-DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
 PROVENANCE_PATH = ARTIFACTS_DIR / "boosted_training_manifest.json"
 
 N_BOOTSTRAP = 200
 
-# Same features as logistic regression (for A/B testing consistency)
+# Production training configuration. These are the values the committed model was
+# trained under; tests pin them so a refactor cannot drift them silently.
+TEST_SIZE = 0.2
+VALIDATION_SIZE = 0.25
+OPTUNA_TRIALS = 50
+CV_SPLITS = 5
+CALIBRATION_METHOD = "sigmoid"
+CALIBRATION_CV = 5
+EVAL_METRIC = "logloss"
+
 # Feature names, order, labels and the target column come from the single
 # canonical contract. They used to be maintained separately in each pipeline,
 # in app.py and in streamlit_app.py.
@@ -59,8 +73,23 @@ TARGET_COLUMN = feature_contract.TARGET_COLUMN
 FEATURE_LABELS = dict(feature_contract.FEATURE_LABELS)
 
 
-def compute_drift_baseline(X_train: pd.DataFrame) -> dict:
-    """Compute training-set statistics for drift detection."""
+def artifact_paths(artifacts_dir: Path) -> dict[str, Path]:
+    """Output filenames for a run. One definition, so a run cannot half-relocate."""
+    return {
+        "model_bundle": artifacts_dir / "boosted_model_bundle.pkl",
+        "shap_explainer": artifacts_dir / "boosted_shap_explainer.pkl",
+        "drift_baseline": artifacts_dir / "boosted_drift_baseline.pkl",
+        "metrics": artifacts_dir / "boosted_metrics.json",
+        "provenance": artifacts_dir / "boosted_training_manifest.json",
+    }
+
+
+def build_boosted_drift_baseline(X_train: pd.DataFrame) -> dict:
+    """Column-wise training statistics (variant B drift schema).
+
+    Structurally different from variant A's per-feature mapping, and app.py
+    branches on that difference. Unifying the two is a separate migration.
+    """
     return {
         "means": X_train.mean().to_dict(),
         "stds": X_train.std().to_dict(),
@@ -72,54 +101,42 @@ def compute_drift_baseline(X_train: pd.DataFrame) -> dict:
     }
 
 
-def main() -> None:
-    print("=" * 60)
-    print("DIABETES PREDICTION - XGBoost Pipeline (A/B Variant B)")
-    print("Optuna Hyperparameter Tuning + Youden's J Threshold")
-    print("=" * 60)
+# ---------------------------------------------------------------- stages
 
-    # ---------------------------
-    # 1) Load & prepare data
-    # ---------------------------
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"Dataset not found: {DATA_PATH.resolve()}")
+def prepare_training_data(data_path: Path, *, verbose: bool = True) -> training.TrainingSplits:
+    """Load, validate against the feature contract, and split."""
+    if verbose:
+        print(f"\n📥 Loading dataset from {data_path}...")
+    frame = training.load_training_dataset(data_path, SELECTED_FEATURES, TARGET_COLUMN)
+    if verbose:
+        print(f"✅ Data loaded: {frame.shape[0]:,} rows, {frame.shape[1]} columns")
 
-    print(f"\n📥 Loading dataset from {DATA_PATH}...")
-    df = pd.read_csv(DATA_PATH)
-    print(f"✅ Data loaded: {df.shape[0]:,} rows, {df.shape[1]} columns")
+    X, y = training.select_features(frame, SELECTED_FEATURES, TARGET_COLUMN)
 
-    required_columns = set(SELECTED_FEATURES + [TARGET_COLUMN])
-    missing_columns = required_columns.difference(df.columns)
-    if missing_columns:
-        raise ValueError(f"Missing required columns: {sorted(missing_columns)}")
+    if verbose:
+        print(f"\n📊 Selected Features ({len(SELECTED_FEATURES)}):")
+        for feat in SELECTED_FEATURES:
+            print(f"   - {feat}: {FEATURE_LABELS.get(feat, feat)}")
+        print("\n✂️ Splitting data: 60% train / 20% validation / 20% test (stratified)...")
 
-    X = df[SELECTED_FEATURES].copy()
-    y = df[TARGET_COLUMN].copy()
-
-    print(f"\n📊 Selected Features ({len(SELECTED_FEATURES)}):")
-    for feat in SELECTED_FEATURES:
-        print(f"   - {feat}: {FEATURE_LABELS.get(feat, feat)}")
-
-    # ---------------------------
-    # 2) Split data
-    # ---------------------------
-    print("\n✂️ Splitting data: 60% train / 20% validation / 20% test (stratified)...")
-
-    X_train_full, X_test, y_train_full, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
+    splits = training.split_training_data(
+        X, y, test_size=TEST_SIZE, val_size=VALIDATION_SIZE, random_state=RANDOM_STATE
     )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_full, y_train_full, test_size=0.25, stratify=y_train_full, random_state=RANDOM_STATE
-    )
+    if verbose:
+        for part, size in splits.sizes.items():
+            print(f"   {part.capitalize()}: {size:,} samples")
+    return splits
 
-    print(f"   Train: {len(X_train):,} samples")
-    print(f"   Validation: {len(X_val):,} samples")
-    print(f"   Test: {len(X_test):,} samples")
 
-    # ---------------------------
-    # 3) Optuna hyperparameter tuning
-    # ---------------------------
-    print("\n🔄 Running Optuna hyperparameter optimization (50 trials)...")
+def optimize_hyperparameters(
+    splits: training.TrainingSplits,
+    *,
+    n_trials: int = OPTUNA_TRIALS,
+    show_progress_bar: bool = True,
+) -> optuna.Study:
+    """Run the Optuna study. `n_trials` is injectable so tests need not run 50."""
+    print(f"\n🔄 Running Optuna hyperparameter optimization ({n_trials} trials)...")
+    X_train, y_train = splits.X_train, splits.y_train
 
     def objective(trial):
         params = {
@@ -131,119 +148,119 @@ def main() -> None:
             "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 10.0, log=True),
             "reg_alpha": trial.suggest_float("reg_alpha", 0.01, 10.0, log=True),
         }
-        
-        model = XGBClassifier(
-            **params,
-            random_state=RANDOM_STATE,
-            eval_metric="logloss",
-            n_jobs=1,
-        )
-        
+
+        model = build_model(params)
+
         # 5-fold cross-validation
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+        cv = StratifiedKFold(n_splits=CV_SPLITS, shuffle=True, random_state=RANDOM_STATE)
         scores = cross_val_score(model, X_train, y_train, cv=cv, scoring="roc_auc")
         return scores.mean()
 
-    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE))
-    study.optimize(objective, n_trials=50, show_progress_bar=True)
+    study = optuna.create_study(
+        direction="maximize", sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE)
+    )
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=show_progress_bar)
 
-    best_params = study.best_params
-    print(f"\n✅ Best Optuna params: {best_params}")
+    print(f"\n✅ Best Optuna params: {study.best_params}")
     print(f"   Best CV ROC-AUC: {study.best_value:.4f}")
+    return study
 
-    # ---------------------------
-    # 4) Train final model
-    # ---------------------------
-    print("\n🏗️ Training final XGBoost model...")
 
-    final_model = XGBClassifier(
-        **best_params,
+def build_model(params: dict) -> XGBClassifier:
+    """The production estimator. No scaler: trees do not need one."""
+    return XGBClassifier(
+        **params,
         random_state=RANDOM_STATE,
-        eval_metric="logloss",
+        eval_metric=EVAL_METRIC,
         n_jobs=1,
     )
-    final_model.fit(X_train, y_train)
 
-    # ---------------------------
-    # 5) Youden's J threshold (on validation set)
-    # ---------------------------
+
+def fit_final_model(splits: training.TrainingSplits, best_params: dict) -> XGBClassifier:
+    print("\n🏗️ Training final XGBoost model...")
+    final_model = build_model(best_params)
+    final_model.fit(splits.X_train, splits.y_train)
+    return final_model
+
+
+def select_threshold(model, splits: training.TrainingSplits) -> tuple[float, dict]:
+    """Youden's J on the VALIDATION set, so the test set stays untouched."""
     print("\n🎯 Computing optimal threshold using Youden's J on validation set...")
-    val_proba = final_model.predict_proba(X_val)[:, 1]
-    best_threshold = compute_youden_threshold(y_val.values, val_proba)
+    val_proba = training.positive_class_proba(model, splits.X_val)
+    best_threshold = compute_youden_threshold(splits.y_val.values, val_proba)
     print(f"   Best threshold (Youden's J): {best_threshold:.4f}")
 
-    val_pred = (val_proba >= best_threshold).astype(int)
-    val_metrics = evaluate_predictions(y_val.values, val_pred, val_proba)
+    _, val_metrics = training.evaluate_at_threshold(splits.y_val.values, val_proba, best_threshold)
     print(f"   Validation ROC-AUC: {val_metrics['roc_auc']:.4f}")
     print(f"   Validation F1: {val_metrics['f1']:.4f}")
+    return best_threshold, val_metrics
 
-    # ---------------------------
-    # 6) Final evaluation on TEST set
-    # ---------------------------
+
+def evaluate_on_test(
+    model, splits: training.TrainingSplits, threshold: float
+) -> tuple[np.ndarray, np.ndarray, dict]:
     print("\n🔍 Evaluating on held-out TEST set...")
-    test_proba = final_model.predict_proba(X_test)[:, 1]
-    test_pred = (test_proba >= best_threshold).astype(int)
-    test_metrics = evaluate_predictions(y_test.values, test_pred, test_proba)
+    test_proba = training.positive_class_proba(model, splits.X_test)
+    test_pred, test_metrics = training.evaluate_at_threshold(
+        splits.y_test.values, test_proba, threshold
+    )
 
-    print(f"\n📊 TEST SET METRICS:")
-    print(f"   Accuracy:      {test_metrics['accuracy']:.4f}")
-    print(f"   Precision:     {test_metrics['precision']:.4f}")
-    print(f"   Recall:        {test_metrics['recall']:.4f}")
-    print(f"   F1-score:      {test_metrics['f1']:.4f}")
-    print(f"   ROC-AUC:       {test_metrics['roc_auc']:.4f}")
-    print(f"   Cohen's Kappa: {test_metrics['cohen_kappa']:.4f}")
-    print(f"   MCC:           {test_metrics['mcc']:.4f}")
-    
+    print("\n📊 TEST SET METRICS:")
+    for label, key in (("Accuracy", "accuracy"), ("Precision", "precision"),
+                       ("Recall", "recall"), ("F1-score", "f1"), ("ROC-AUC", "roc_auc"),
+                       ("Cohen's Kappa", "cohen_kappa"), ("MCC", "mcc")):
+        print(f"   {label + ':':15s}{test_metrics[key]:.4f}")
     cm = test_metrics["confusion_matrix"]
-    print(f"\n   Confusion Matrix:")
+    print("\n   Confusion Matrix:")
     print(f"   [[TN={cm[0][0]:5d}  FP={cm[0][1]:5d}]")
     print(f"    [FN={cm[1][0]:5d}  TP={cm[1][1]:5d}]]")
-
     print("\n   Classification Report:")
-    print(classification_report(y_test, test_pred, digits=4, target_names=["No Diabetes", "Diabetes"]))
+    print(classification_report(
+        splits.y_test, test_pred, digits=4, target_names=["No Diabetes", "Diabetes"]
+    ))
+    return test_proba, test_pred, test_metrics
 
-    # ---------------------------
-    # 7) Probability Calibration
-    # ---------------------------
+
+def calibrate_model(
+    model,
+    splits: training.TrainingSplits,
+    threshold: float,
+    uncalibrated_test_proba: np.ndarray,
+) -> tuple[CalibratedClassifierCV, np.ndarray, np.ndarray, dict, float, float]:
+    """Platt scaling over train+validation, then re-evaluate on the test set."""
     print("\n🎯 Calibrating probabilities (Platt scaling on validation set)...")
     calibrated_model = CalibratedClassifierCV(
-        final_model,
-        cv=5,
-        method="sigmoid",
+        model,
+        cv=CALIBRATION_CV,
+        method=CALIBRATION_METHOD,
     )
     calibrated_model.fit(
-        pd.concat([X_train, X_val]),
-        pd.concat([y_train, y_val]),
+        pd.concat([splits.X_train, splits.X_val]),
+        pd.concat([splits.y_train, splits.y_val]),
     )
 
-    cal_proba = calibrated_model.predict_proba(X_test)[:, 1]
-    brier_before = brier_score_loss(y_test, test_proba)
-    brier_after = brier_score_loss(y_test, cal_proba)
+    cal_proba = training.positive_class_proba(calibrated_model, splits.X_test)
+    brier_before = brier_score_loss(splits.y_test, uncalibrated_test_proba)
+    brier_after = brier_score_loss(splits.y_test, cal_proba)
     print(f"   Brier score (before calibration): {brier_before:.4f}")
     print(f"   Brier score (after calibration):  {brier_after:.4f}")
 
-    test_proba_final = cal_proba
-    test_pred_final = (test_proba_final >= best_threshold).astype(int)
-    test_metrics = evaluate_predictions(y_test.values, test_pred_final, test_proba_final)
-    print(f"   Calibrated ROC-AUC: {test_metrics['roc_auc']:.4f}")
-
-    # ---------------------------
-    # 8) Bootstrap Confidence Intervals
-    # ---------------------------
-    print(f"\n📊 Computing {N_BOOTSTRAP}-iteration bootstrap confidence intervals...")
-    ci_results = bootstrap_confidence_interval(
-        y_test.values, test_proba_final, best_threshold
+    test_pred_final, test_metrics = training.evaluate_at_threshold(
+        splits.y_test.values, cal_proba, threshold
     )
-    print("   95% Confidence Intervals:")
-    for metric, vals in ci_results.items():
-        print(f"      {metric:12s}: {vals['mean']:.4f}  [{vals['ci_lower']:.4f}, {vals['ci_upper']:.4f}]")
+    print(f"   Calibrated ROC-AUC: {test_metrics['roc_auc']:.4f}")
+    return calibrated_model, cal_proba, test_pred_final, test_metrics, brier_before, brier_after
 
-    # ---------------------------
-    # 9) SHAP Explainability
-    # ---------------------------
+
+def build_shap_explainer(model, splits: training.TrainingSplits):
+    """TreeExplainer over the raw feature space - no scaling for trees.
+
+    Separated so training-stage tests need not pay for SHAP; the end-to-end
+    smoke opts in explicitly.
+    """
     print("\n🔍 Computing SHAP values (TreeExplainer)...")
-    explainer = shap.TreeExplainer(final_model)
-    shap_values_test = explainer.shap_values(X_test)
+    explainer = shap.TreeExplainer(model)
+    shap_values_test = explainer.shap_values(splits.X_test)
 
     mean_abs_shap = np.abs(shap_values_test).mean(axis=0)
     shap_importance = pd.DataFrame({
@@ -254,33 +271,51 @@ def main() -> None:
     print("\n   📈 Feature Importance (mean |SHAP|):")
     for _, row in shap_importance.iterrows():
         print(f"      {row['Feature']:25s}: {row['Mean_SHAP']:.4f}")
+    return explainer
 
-    # ---------------------------
-    # 10) Feature importance (XGBoost native)
-    # ---------------------------
+
+def report_gain_importance(model) -> pd.DataFrame:
+    """Operator-facing importance report. No effect on any artifact."""
     print("\n📈 Feature Importance (XGBoost gain):")
     importance_df = pd.DataFrame({
         "Feature": SELECTED_FEATURES,
-        "Importance": final_model.feature_importances_
+        "Importance": model.feature_importances_
     }).sort_values("Importance", ascending=False)
 
     for _, row in importance_df.iterrows():
         print(f"   {row['Feature']}: {row['Importance']:.4f}")
+    return importance_df
 
-    # ---------------------------
-    # 11) Save artifacts
-    # ---------------------------
-    ARTIFACTS_DIR.mkdir(exist_ok=True)
+
+def write_training_outputs(
+    artifacts_dir: Path,
+    *,
+    calibrated_model,
+    raw_model,
+    explainer,
+    drift_baseline: dict,
+    threshold: float,
+    best_params: dict,
+    best_cv_auc: float,
+    val_metrics: dict,
+    test_metrics: dict,
+    ci_results: dict,
+    brier_before: float,
+    brier_after: float,
+) -> dict[str, Path]:
+    """Persist every artifact. Takes an explicit directory - never a global."""
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    paths = artifact_paths(artifacts_dir)
 
     bundle = {
         "pipeline": calibrated_model,
-        "raw_model": final_model,
-        "threshold": best_threshold,
+        "raw_model": raw_model,
+        "threshold": threshold,
         "feature_columns": SELECTED_FEATURES,
         "feature_labels": FEATURE_LABELS,
         "model_name": "xgboost_boosted_trees",
         "optuna_params": best_params,
-        "optuna_best_cv_auc": study.best_value,
+        "optuna_best_cv_auc": best_cv_auc,
         "confidence_intervals": ci_results,
         "calibration": {
             "method": "platt_scaling",
@@ -288,25 +323,24 @@ def main() -> None:
             "brier_after": brier_after,
         },
     }
-    joblib.dump(bundle, MODEL_BUNDLE_PATH)
-    print(f"\n💾 Model bundle saved: {MODEL_BUNDLE_PATH}")
+    joblib.dump(bundle, paths["model_bundle"])
+    print(f"\n💾 Model bundle saved: {paths['model_bundle']}")
 
-    # Save drift baseline
-    drift_baseline = compute_drift_baseline(X_train)
-    joblib.dump(drift_baseline, DRIFT_BASELINE_PATH)
-    print(f"💾 Drift baseline saved: {DRIFT_BASELINE_PATH}")
+    joblib.dump(drift_baseline, paths["drift_baseline"])
+    print(f"💾 Drift baseline saved: {paths['drift_baseline']}")
 
-    joblib.dump({
-        "explainer": explainer,
-        "expected_value": float(explainer.expected_value),
-        "feature_names": SELECTED_FEATURES,
-    }, SHAP_PATH)
-    print(f"💾 SHAP explainer saved: {SHAP_PATH}")
+    if explainer is not None:
+        joblib.dump({
+            "explainer": explainer,
+            "expected_value": float(explainer.expected_value),
+            "feature_names": SELECTED_FEATURES,
+        }, paths["shap_explainer"])
+        print(f"💾 SHAP explainer saved: {paths['shap_explainer']}")
 
     metrics_output = {
-        "threshold": best_threshold,
+        "threshold": threshold,
         "optuna_params": best_params,
-        "optuna_best_cv_auc": study.best_value,
+        "optuna_best_cv_auc": best_cv_auc,
         "validation_metrics": val_metrics,
         "test_metrics": test_metrics,
         "confidence_intervals": ci_results,
@@ -315,45 +349,56 @@ def main() -> None:
             "brier_after": brier_after,
         },
     }
-    with open(METRICS_PATH, "w") as f:
-        json.dump(metrics_output, f, indent=2)
-    print(f"💾 Metrics saved: {METRICS_PATH}")
+    training.write_json_atomic(metrics_output, paths["metrics"])
+    print(f"💾 Metrics saved: {paths['metrics']}")
+    return paths
 
-    # ------------------------------------------------------------------
-    # Provenance manifest - written LAST, after every artifact above is on
-    # disk, so its hashes attest to completed outputs. If anything above
-    # failed, no manifest is produced at all.
-    # ------------------------------------------------------------------
-    provenance.emit_training_manifest(
+
+def emit_provenance(
+    paths: dict[str, Path],
+    *,
+    data_path: Path,
+    artifacts_dir: Path,
+    best_params: dict,
+    best_cv_auc: float,
+    threshold: float,
+    n_trials: int,
+    val_metrics: dict,
+    test_metrics: dict,
+    ci_results: dict,
+) -> Path:
+    """Written LAST, after every artifact above is on disk, so its hashes attest
+    to completed outputs. If anything above failed, no manifest is produced."""
+    written = provenance.emit_training_manifest(
         project_root=PROJECT_ROOT,
-        output_path=PROVENANCE_PATH,
+        output_path=paths["provenance"],
         variant="B",
         model_name="xgboost_boosted_trees",
-        dataset_path=DATA_PATH,
+        dataset_path=data_path,
         target_column=TARGET_COLUMN,
         # Straight from the canonical contract, so the schema hash can never
         # describe a feature list the models were not trained on.
         feature_names=list(feature_contract.FEATURE_NAMES),
         training={
             "random_state": RANDOM_STATE,
-            "test_size": 0.2,
-            "validation_size_of_train": 0.25,
+            "test_size": TEST_SIZE,
+            "validation_size_of_train": VALIDATION_SIZE,
             "stratified": True,
             "scaler": None,
             "optuna_sampler": "TPESampler",
             "optuna_sampler_seed": RANDOM_STATE,
-            "optuna_n_trials": 50,
+            "optuna_n_trials": n_trials,
             "optuna_direction": "maximize",
             "optuna_best_params": best_params,
-            "optuna_best_cv_auc": study.best_value,
-            "cv_splits": 5,
-            "calibration_method": "sigmoid",
-            "calibration_cv": 5,
+            "optuna_best_cv_auc": best_cv_auc,
+            "cv_splits": CV_SPLITS,
+            "calibration_method": CALIBRATION_METHOD,
+            "calibration_cv": CALIBRATION_CV,
             "threshold_method": "youden_j",
-            "selected_threshold": best_threshold,
+            "selected_threshold": threshold,
             "n_bootstrap": N_BOOTSTRAP,
             "bootstrap_alpha": 0.05,
-            "artifacts_dir": provenance.relative_path(ARTIFACTS_DIR, PROJECT_ROOT),
+            "artifacts_dir": provenance.relative_path(artifacts_dir, PROJECT_ROOT),
         },
         evaluation={
             "validation_metrics": val_metrics,
@@ -361,30 +406,24 @@ def main() -> None:
             "confidence_intervals": ci_results,
         },
         artifact_specs=[
-            ("model_bundle", MODEL_BUNDLE_PATH, True),
-            ("shap_explainer", SHAP_PATH, True),
-            ("drift_baseline", DRIFT_BASELINE_PATH, True),
-            ("metrics", METRICS_PATH, True),
+            ("model_bundle", paths["model_bundle"], True),
+            ("shap_explainer", paths["shap_explainer"], True),
+            ("drift_baseline", paths["drift_baseline"], True),
+            ("metrics", paths["metrics"], True),
         ],
         source_files=[
             Path(__file__).resolve(),
             PROJECT_ROOT / "ml_core" / "evaluation.py",
             PROJECT_ROOT / "ml_core" / "bootstrap.py",
             PROJECT_ROOT / "ml_core" / "thresholds.py",
+            PROJECT_ROOT / "ml_core" / "training.py",
+            PROJECT_ROOT / "ml_core" / "feature_contract.py",
             PROJECT_ROOT / "ml_core" / "provenance.py",
         ],
         lockfile=PROJECT_ROOT / "requirements.lock",
     )
-    print(f"💾 Provenance manifest saved: {PROVENANCE_PATH}")
-
-    print("\n" + "=" * 60)
-    print("✅ XGBoost pipeline complete!")
-    print(f"   - Optuna trials: 50")
-    print(f"   - Best threshold: {best_threshold:.4f} (Youden's J)")
-    print(f"   - Test ROC-AUC: {test_metrics['roc_auc']:.4f}")
-    print(f"   - Brier score: {brier_after:.4f} (calibrated)")
-    print(f"   - SHAP explainer: saved")
-    print("=" * 60)
+    print(f"💾 Provenance manifest saved: {written}")
+    return written
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -397,18 +436,84 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Training dataset.")
     parser.add_argument("--artifacts-dir", type=Path, default=ARTIFACTS_DIR, metavar="DIR",
                         help="Directory the model bundle and metrics are written to.")
+    parser.add_argument("--optuna-trials", type=int, default=OPTUNA_TRIALS, metavar="N",
+                        help="Hyperparameter search budget.")
     return parser.parse_args(argv)
 
 
+def main(argv: list[str] | None = None) -> int:
+    """Orchestration: load -> optimize -> train -> evaluate -> explain -> persist -> attest."""
+    args = parse_args(argv)
+
+    print("=" * 60)
+    print("DIABETES PREDICTION - XGBoost Pipeline (A/B Variant B)")
+    print("Optuna Hyperparameter Tuning + Youden's J Threshold")
+    print("=" * 60)
+
+    splits = prepare_training_data(args.data_path)
+    study = optimize_hyperparameters(splits, n_trials=args.optuna_trials)
+    best_params = study.best_params
+
+    final_model = fit_final_model(splits, best_params)
+
+    threshold, val_metrics = select_threshold(final_model, splits)
+    test_proba, _test_pred, _ = evaluate_on_test(final_model, splits, threshold)
+
+    (calibrated_model, test_proba_final, _test_pred_final,
+     test_metrics, brier_before, brier_after) = calibrate_model(
+        final_model, splits, threshold, test_proba
+    )
+
+    print(f"\n📊 Computing {N_BOOTSTRAP}-iteration bootstrap confidence intervals...")
+    ci_results = bootstrap_confidence_interval(
+        splits.y_test.values, test_proba_final, threshold
+    )
+    print("   95% Confidence Intervals:")
+    for metric, vals in ci_results.items():
+        print(f"      {metric:12s}: {vals['mean']:.4f}  [{vals['ci_lower']:.4f}, {vals['ci_upper']:.4f}]")
+
+    explainer = build_shap_explainer(final_model, splits)
+    report_gain_importance(final_model)
+
+    drift_baseline = build_boosted_drift_baseline(splits.X_train)
+
+    paths = write_training_outputs(
+        args.artifacts_dir,
+        calibrated_model=calibrated_model,
+        raw_model=final_model,
+        explainer=explainer,
+        drift_baseline=drift_baseline,
+        threshold=threshold,
+        best_params=best_params,
+        best_cv_auc=study.best_value,
+        val_metrics=val_metrics,
+        test_metrics=test_metrics,
+        ci_results=ci_results,
+        brier_before=brier_before,
+        brier_after=brier_after,
+    )
+    emit_provenance(
+        paths,
+        data_path=args.data_path,
+        artifacts_dir=args.artifacts_dir,
+        best_params=best_params,
+        best_cv_auc=study.best_value,
+        threshold=threshold,
+        n_trials=args.optuna_trials,
+        val_metrics=val_metrics,
+        test_metrics=test_metrics,
+        ci_results=ci_results,
+    )
+
+    print("\n" + "=" * 60)
+    print("✅ XGBoost pipeline complete!")
+    print(f"   - Optuna trials: {args.optuna_trials}")
+    print(f"   - Best threshold: {threshold:.4f} (Youden's J)")
+    print(f"   - Test ROC-AUC: {test_metrics['roc_auc']:.4f}")
+    print(f"   - Brier score: {brier_after:.4f} (calibrated)")
+    print("=" * 60)
+    return 0
+
+
 if __name__ == "__main__":
-    _args = parse_args()
-    # Rebind the module-level paths that main() reads. Hyperparameters,
-    # features, seeds, thresholds and artifact formats are untouched.
-    DATA_PATH = _args.data_path
-    ARTIFACTS_DIR = _args.artifacts_dir
-    MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
-    METRICS_PATH = ARTIFACTS_DIR / "boosted_metrics.json"
-    SHAP_PATH = ARTIFACTS_DIR / "boosted_shap_explainer.pkl"
-    DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
-    PROVENANCE_PATH = ARTIFACTS_DIR / "boosted_training_manifest.json"
-    main()
+    raise SystemExit(main())

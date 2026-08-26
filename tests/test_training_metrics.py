@@ -203,7 +203,7 @@ def test_bootstrap_fails_loudly_when_every_resample_is_single_class(training):
 def test_logistic_drift_baseline_is_per_feature_statistics():
     frame = pd.DataFrame({"BMI": [20.0, 30.0, 40.0], "Age": [1.0, 5.0, 9.0]})
 
-    baseline = lr_train.compute_drift_baseline(frame)
+    baseline = lr_train.build_logistic_drift_baseline(frame)
 
     assert set(baseline) == {"BMI", "Age"}
     assert set(baseline["BMI"]) == {"mean", "std", "min", "max", "q25", "median", "q75"}
@@ -218,7 +218,7 @@ def test_logistic_drift_baseline_is_per_feature_statistics():
 def test_boosted_drift_baseline_is_column_wise_statistics():
     frame = pd.DataFrame({"BMI": [20.0, 30.0, 40.0], "Age": [1.0, 5.0, 9.0]})
 
-    baseline = xgb_train.compute_drift_baseline(frame)
+    baseline = xgb_train.build_boosted_drift_baseline(frame)
 
     assert set(baseline) == {"means", "stds", "medians", "q25", "q75", "n_train", "feature_columns"}
     assert baseline["feature_columns"] == ["BMI", "Age"]
