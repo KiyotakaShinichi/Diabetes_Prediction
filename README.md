@@ -24,13 +24,66 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 - API backend: FastAPI app on port 8000
 - Admin dashboard: Streamlit app on internal-only port 8502
 
+## Frontend
+
+Two Streamlit applications share one presentation layer. Neither renders styling
+of its own beyond what `ui/theme.py` owns, and the global theme is pinned in
+`.streamlit/config.toml` rather than left to the visitor's browser.
+
+### Public assessment
+
+An educational risk estimator, not a diagnostic tool. It asks the ten questions
+named by the canonical feature contract, and nothing is filled in on the
+visitor's behalf: every choice starts on a placeholder and both numeric fields
+start empty, so an untouched form cannot produce a result. Submitting an
+incomplete form names the questions still outstanding.
+
+The result leads with a single quantity - the estimated risk - followed by what
+that estimate does and does not mean. The classification threshold is presented
+as model metadata in a details panel rather than as a second number competing
+with the estimate. Held-out precision, recall and ROC-AUC are shown from the
+committed metrics, labelled as dataset-level behaviour rather than as confidence
+in any individual estimate.
+
+### Explainability
+
+Each answer's SHAP contribution is listed with the question as the visitor read
+it, the answer they gave, the direction of the effect stated in words, and its
+relative strength. Direction never depends on interpreting a colour. When no
+SHAP explainer is deployed, the panel says so instead of disappearing.
+
+### Admin monitoring
+
+A separate, login-protected dashboard covering inference volume, the A/B split
+across model variants, committed evaluation metrics with bootstrap confidence
+intervals, and a drift comparison against the training baseline for either
+variant. It fails closed: with no authentication provider configured, no login
+can succeed and the dashboard says so.
+
+### Model provenance
+
+The details panel reports the serving variant, model family, feature count and
+threshold, along with how many artifacts are inventoried by SHA-256 checksum.
+It also states plainly that the training lineage of the committed models is
+unknown - they predate this project's provenance system, and reconstructing a
+training run for them would be fabrication. Integrity is verified in CI; history
+is not claimed.
+
+### Non-diagnostic purpose
+
+The tool estimates statistical risk from survey-style inputs. It uses no
+laboratory values, it does not diagnose any condition, and it does not instruct
+anyone to obtain a specific medical test. The boundary is stated above the form,
+before any information is entered, and restated with the result.
+
 ## Repository Overview
 
 ### Core Applications
 
 - `app.py`: FastAPI inference API (`/predict`, `/explain`, drift and analytics endpoints)
-- `streamlit_app.py`: Public clinical assessment UI
-- `admin_app.py`: Auth-protected analytics dashboard
+- `streamlit_app.py`: Public risk-assessment UI (page orchestration)
+- `admin_app.py`: Auth-protected analytics dashboard (page orchestration)
+- `ui/`: Shared presentation layer for both Streamlit apps
 - `inference_db.py`: Inference logging and database access
 - `admin_auth.py`: Admin authentication helpers
 - `create_admin_user.py`: Utility to add admin users
