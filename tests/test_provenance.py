@@ -10,13 +10,17 @@ state only what is observable now. Any field describing historical lineage must
 be an explicit null. Several tests exist purely to stop a future change from
 quietly inventing that history.
 """
+import inspect
 import json
 import subprocess
 import sys
 
 import pytest
 
+import boostedtrees_ab as xgb_pipeline
+import logisticregression_only as lr_pipeline
 from conftest import ARTIFACTS_DIR, REPO_ROOT
+from ml_core import pipeline as shared_pipeline
 from ml_core import provenance
 
 ATTESTATION_PATH = REPO_ROOT / "provenance" / "legacy_artifact_attestation.json"
@@ -547,30 +551,38 @@ def test_verifier_cli_reports_the_specific_problem(sample_run):
 # ============================================ pipelines emit manifests
 
 @pytest.mark.parametrize(
-    ("pipeline", "manifest_name"),
-    [("logisticregression_only.py", "training_manifest.json"),
-     ("boostedtrees_ab.py", "boosted_training_manifest.json")],
+    ("module", "manifest_name"),
+    [pytest.param(lr_pipeline, "training_manifest.json", id="logistic_regression"),
+     pytest.param(xgb_pipeline, "boosted_training_manifest.json", id="boosted_trees")],
 )
-def test_pipeline_emits_a_manifest_as_its_final_step(pipeline, manifest_name):
-    source = (REPO_ROOT / pipeline).read_text(encoding="utf-8")
+def test_pipeline_emits_a_manifest_as_its_final_step(module, manifest_name, tmp_path):
+    """The manifest is written last, after every artifact it attests to.
 
-    assert f'PROVENANCE_PATH = ARTIFACTS_DIR / "{manifest_name}"' in source
-    assert "provenance.emit_training_manifest(" in source
+    Emission now runs through the shared ml_core.pipeline.emit_pipeline_provenance,
+    so the filename is asserted on the resolved path rather than on a source
+    constant, and ordering is asserted on main()'s actual call sequence.
+    """
+    assert module.artifact_paths(tmp_path)["provenance"].name == manifest_name
+    assert module.PIPELINE_SPEC.filenames["provenance"] == manifest_name
 
-    # The manifest call must come after every artifact write in main(). Only
-    # the write forms this pipeline actually uses are checked - boostedtrees_ab
-    # writes no CSV, and rindex on an absent form would raise rather than fail.
-    emit_at = source.index("provenance.emit_training_manifest(")
-    writes = [w for w in ("joblib.dump(", "json.dump(", ".to_csv(") if w in source]
-    assert writes, "expected the pipeline to write artifacts"
-    for write in writes:
-        assert source.rindex(write) < emit_at, f"{write} happens after the manifest"
+    body = inspect.getsource(module.main)
+    assert body.rindex("write_training_outputs(") < body.index("emit_provenance(")
+
+    # Nothing persists after the manifest call - not in main(), and not inside
+    # the shared emitter it delegates to.
+    emitter = inspect.getsource(shared_pipeline.emit_pipeline_provenance)
+    assert "provenance.emit_training_manifest(" in emitter
+    tail = body[body.index("emit_provenance("):] + emitter[emitter.index("emit_training_manifest("):]
+    for write in ("joblib.dump(", "json.dump(", ".to_csv("):
+        assert write not in tail, f"{write} happens after the manifest"
 
 
 @pytest.mark.parametrize(
-    "pipeline", ["logisticregression_only.py", "boostedtrees_ab.py"]
+    "module",
+    [pytest.param(lr_pipeline, id="logistic_regression"),
+     pytest.param(xgb_pipeline, id="boosted_trees")],
 )
-def test_pipeline_manifest_path_follows_an_overridden_artifacts_dir(pipeline):
+def test_pipeline_manifest_path_follows_an_overridden_artifacts_dir(module, tmp_path):
     """--artifacts-dir must relocate the manifest along with the artifacts.
 
     Output filenames now live in a single artifact_paths(artifacts_dir) helper,
@@ -578,11 +590,14 @@ def test_pipeline_manifest_path_follows_an_overridden_artifacts_dir(pipeline):
     passed in. Previously the same constants were rebound in two places and
     could half-relocate.
     """
-    source = (REPO_ROOT / pipeline).read_text(encoding="utf-8")
+    paths = module.artifact_paths(tmp_path)
 
-    assert "def artifact_paths(artifacts_dir: Path)" in source
-    assert '"provenance": artifacts_dir / ' in source
-    assert "output_path=paths[\"provenance\"]" in source
+    assert "provenance" in paths
+    assert all(path.parent == tmp_path for path in paths.values())
+    # The emitter writes wherever the resolved path points, never at a constant.
+    assert 'output_path=paths["provenance"]' in inspect.getsource(
+        shared_pipeline.emit_pipeline_provenance
+    )
 
 
 # ============================================ platform-stable byte hashing
