@@ -21,6 +21,7 @@ include = [
     "experiment_config.py",
     "conftest.py",
     "ml_core/**/*.py",
+    "ui/**/*.py",
     "tests/**/*.py",
     "tools/**/*.py",
 ]

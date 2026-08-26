@@ -28,6 +28,7 @@ from ml_core.feature_contract import (
     FEATURE_SPECS,
     TARGET_COLUMN,
 )
+from ui import public_components
 
 BUNDLES = [
     pytest.param("model_bundle.pkl", "A", id="variant-A"),
@@ -169,29 +170,53 @@ def test_the_two_drift_schemas_stay_distinct():
 
 # ==================================================== Streamlit UI
 
+def _asked_features() -> list[str]:
+    """Every feature the public form puts to a visitor, in render order."""
+    return [
+        question.feature
+        for _heading, questions in public_components.SECTIONS
+        for question in questions
+    ]
+
+
 def test_streamlit_collects_every_served_feature():
-    source = (REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-    payload_block = source[source.index("payload = {"):source.index("input_df =")]
+    asked = _asked_features()
 
     for name in FEATURE_NAMES:
-        assert f'"{name}"' in payload_block, f"streamlit_app.py does not collect {name}"
+        assert name in asked, f"the public form does not collect {name}"
 
 
 def test_streamlit_collects_no_extra_model_feature():
-    source = (REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-    block = source[source.index("payload = {"):source.index("input_df =")]
-    collected = {line.split('"')[1] for line in block.splitlines() if line.strip().startswith('"')}
+    """No duplicates, no extras: the form and the contract are the same set."""
+    asked = _asked_features()
 
-    assert collected == set(FEATURE_NAMES)
+    assert sorted(asked) == sorted(FEATURE_NAMES)
+    assert set(public_components.CATEGORICAL_CHOICES) | set(
+        public_components.NUMERIC_FEATURES
+    ) == set(FEATURE_NAMES)
+
+
+def test_streamlit_categorical_choices_stay_inside_the_contract_domain():
+    """Display wording is UI copy; the codes behind it are contract."""
+    for name, choices in public_components.CATEGORICAL_CHOICES.items():
+        spec = feature_contract.spec_for(name)
+        assert tuple(sorted(choices.values())) == spec.allowed_values, name
 
 
 def test_streamlit_numeric_bounds_come_from_the_contract():
-    source = (REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    """Numeric inputs read their bounds from the spec, never from a literal."""
+    source = (REPO_ROOT / "ui" / "public_components.py").read_text(encoding="utf-8")
 
-    assert 'feature_contract.spec_for("BMI").minimum' in source
-    assert 'feature_contract.spec_for("BMI").maximum' in source
-    assert 'feature_contract.spec_for("PhysHlth").minimum' in source
-    assert "feature_contract.order_columns(" in source
+    assert "feature_contract.spec_for(question.feature)" in source
+    assert "spec.dtype(spec.minimum)" in source
+    assert "spec.dtype(spec.maximum)" in source
+    for name in public_components.NUMERIC_FEATURES:
+        # Every numeric input names a real contract feature, so spec_for() above
+        # resolves rather than raising at render time.
+        assert feature_contract.spec_for(name).kind != "binary", name
+
+    entrypoint = (REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+    assert "feature_contract.order_columns(" in entrypoint
 
 
 # ==================================================== provenance
