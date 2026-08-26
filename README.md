@@ -20,9 +20,61 @@ Clinical decision support project for diabetes risk prediction using multiple ma
 
 ## Architecture
 
-- Public frontend: Streamlit app on port 8501
-- API backend: FastAPI app on port 8000
-- Admin dashboard: Streamlit app on internal-only port 8502
+One serving path. The FastAPI service is the only component that loads a model
+and scores a request; the public UI is presentation over an HTTP client.
+
+```
+Public Streamlit (8501)
+        |
+        |  POST /predict, POST /explain      DIABETES_API_BASE_URL
+        v
+FastAPI inference API (8000)
+        |
+        +-- Pydantic validation of every field
+        +-- canonical feature ordering, refusing a bundle that disagrees
+        +-- model bundle loading and caching
+        +-- deterministic A/B variant routing
+        +-- thresholding and risk classification
+        +-- request correlation ids and sanitised errors
+        +-- inference telemetry (the single writer)
+        v
+model_artifacts/  ->  inference log (SQLite, or PostgreSQL via DATABASE_URL)
+
+Admin Streamlit (8502, login-protected) reads the inference log and the
+committed artifacts directly. It is a monitoring surface, not an API client.
+```
+
+The public app does **not** load `model_bundle.pkl`, call `predict_proba`,
+compare against a threshold, choose a model variant, or write to the inference
+log. Those decisions belong to the API and are read back off its response, so
+the two cannot drift apart. `tests/test_serving_convergence.py` enforces this
+against the AST rather than by convention.
+
+### Configuring the public UI
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DIABETES_API_BASE_URL` | `http://127.0.0.1:8000` | Where the public UI sends predictions |
+| `DIABETES_API_TIMEOUT_SECONDS` | `15` | Per-request timeout |
+
+`DIABETES_API_BASE_URL` accepts a full `http://` or `https://` URL, or a bare
+`host:port` with no scheme. The scheme-less form exists because Render's
+Blueprint resolves `fromService` / `property: hostport` to `diabetes-api:10000`
+over its private network, where there is no TLS terminator; the client
+normalises that to `http://`. A malformed value raises rather than falling back
+to loopback, so a misconfigured deployment fails visibly instead of starting up
+and failing every submission.
+
+On Render the wiring is a service reference, not a literal hostname, so it
+survives a Blueprint redeploy:
+
+```yaml
+      - key: DIABETES_API_BASE_URL
+        fromService:
+          name: diabetes-api
+          type: web
+          property: hostport
+```
 
 ## Frontend
 
@@ -398,15 +450,19 @@ Optional variant B outputs:
 Use separate terminals:
 
 ```powershell
-# API
+# API - start this first; the public UI depends on it
 uvicorn app:app --host 0.0.0.0 --port 8000
 
-# Public UI
+# Public UI - reaches the API at http://127.0.0.1:8000 with no configuration
 streamlit run streamlit_app.py --server.port 8501
 
 # Admin dashboard (internal only)
 streamlit run admin_app.py --server.port 8502
 ```
+
+The public UI cannot produce an estimate without the API running: it performs
+no local inference. To point it somewhere else, set `DIABETES_API_BASE_URL`
+before launching it.
 
 ## API Endpoints
 
