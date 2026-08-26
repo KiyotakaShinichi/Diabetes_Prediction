@@ -1,0 +1,159 @@
+{
+  "artifacts": [
+    {
+      "bytes": 772,
+      "embedded_versions": {
+        "sklearn": null,
+        "xgboost": null
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/boosted_drift_baseline.pkl",
+      "required_for_serving": true,
+      "role": "drift_baseline_variant_b",
+      "sha256": "d3d1e83ea7a91ab00a41a68295f292d8933c750b87a18081ca98e5b8787d6cbc"
+    },
+    {
+      "bytes": 2232,
+      "format": "json",
+      "path": "model_artifacts/boosted_metrics.json",
+      "required_for_serving": true,
+      "role": "metrics_variant_b",
+      "sha256": "36a493a9627c47fe3548993d534665854f9f4a819808a2516c713a3ef79934fc"
+    },
+    {
+      "bytes": 1740821,
+      "embedded_versions": {
+        "sklearn": "1.8.0",
+        "xgboost": "3.0.4"
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/boosted_model_bundle.pkl",
+      "required_for_serving": true,
+      "role": "model_bundle_variant_b",
+      "sha256": "6e18a0f84c4b652c2638661535ed5e42b5db51ea0986456770942e62a475898f"
+    },
+    {
+      "bytes": 693947,
+      "embedded_versions": {
+        "sklearn": null,
+        "xgboost": "3.0.4"
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/boosted_shap_explainer.pkl",
+      "required_for_serving": true,
+      "role": "shap_explainer_variant_b",
+      "sha256": "63e7da576bfc7cdc8c6ec25a08d42b5be8eda392e44a9be7fc272c355e6f27ff"
+    },
+    {
+      "bytes": 971,
+      "embedded_versions": {
+        "sklearn": "1.7.1",
+        "xgboost": null
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/diabetes_model.pkl",
+      "required_for_serving": false,
+      "role": "unused_legacy_estimator",
+      "sha256": "4e82273c525bc5711067acbfe1d05b8b9941ff6f600b3044ccdfc97dd10450a8"
+    },
+    {
+      "bytes": 972,
+      "embedded_versions": {
+        "sklearn": null,
+        "xgboost": null
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/drift_baseline.pkl",
+      "required_for_serving": true,
+      "role": "drift_baseline_variant_a",
+      "sha256": "4641afa0cfe64df666f43b051319817748308e815bfe47e7046741d316cbd307"
+    },
+    {
+      "bytes": 2190,
+      "format": "json",
+      "path": "model_artifacts/metrics.json",
+      "required_for_serving": true,
+      "role": "metrics_variant_a",
+      "sha256": "dce208c3d7e9fe9d6d24f4da0d681ee1e5bbe05dec836dbc305350964527a5f2"
+    },
+    {
+      "bytes": 10378,
+      "embedded_versions": {
+        "sklearn": "1.8.0",
+        "xgboost": null
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/model_bundle.pkl",
+      "required_for_serving": true,
+      "role": "model_bundle_variant_a",
+      "sha256": "0dfb45b0bb7c8fcbfe18e573edcff6aaa1099cc722b3ce8cf883b57424127781"
+    },
+    {
+      "bytes": 1295,
+      "embedded_versions": {
+        "sklearn": "1.7.1",
+        "xgboost": null
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/scaler.pkl",
+      "required_for_serving": false,
+      "role": "unused_legacy_scaler",
+      "sha256": "253586191bd4c3354bcdcbe67a29d8b9c1aa1c91e5050dc1366d30deaf1b072f"
+    },
+    {
+      "bytes": 18902,
+      "embedded_versions": {
+        "sklearn": "1.8.0",
+        "xgboost": null
+      },
+      "format": "joblib_pickle",
+      "path": "model_artifacts/shap_explainer.pkl",
+      "required_for_serving": true,
+      "role": "shap_explainer_variant_a",
+      "sha256": "c857e614be8cc706e563d26b2b4582e8e9bbdc73355686e062bb00d50453a603"
+    },
+    {
+      "bytes": 613812,
+      "format": "csv",
+      "path": "model_artifacts/test_predictions.csv",
+      "required_for_serving": false,
+      "role": "training_output_not_served",
+      "sha256": "c53b337a4842fd0330178a69704603c8e815cd74392c87b8ca522f28860edb6f"
+    },
+    {
+      "bytes": 18,
+      "format": "text",
+      "path": "model_artifacts/threshold.txt",
+      "required_for_serving": false,
+      "role": "unused_legacy_threshold",
+      "sha256": "8b4995f5658554d3cba69fd8d2c6295def483654328cd744a0f2e9f1f5fd7268"
+    }
+  ],
+  "attestation": {
+    "generated_from_commit": {
+      "branch": "main",
+      "commit_sha": "a3ab2855b334f857671f83945ccadf3c9fdf9f42",
+      "dirty": true
+    },
+    "observed_by": "tools/build_artifact_attestation.py",
+    "statement": "Integrity inventory of artifacts that predate this provenance system. Artifact integrity is NOT proof of training provenance."
+  },
+  "current_dataset": {
+    "bytes": 3129653,
+    "note": "Hash of the dataset committed TODAY. It is NOT established that these bytes are what produced the artifacts above.",
+    "path": "cleaned_data.csv",
+    "sha256": "f24f06d0c4ad5895ad62a62cd7ea373ce6d6c2868071bb1de19e9d7b54b63368"
+  },
+  "environment_note": "Versions under artifacts[].embedded_versions are read from bytes inside each artifact and are therefore OBSERVED, not assumed. They describe what wrote the artifact, not the current interpreter.",
+  "provenance_type": "legacy_artifact_attestation",
+  "schema_version": 1,
+  "unknown_history": {
+    "producer_git_sha": null,
+    "reason": "These artifacts were committed before provenance manifests existed. No run record was kept, and reconstructing one from file timestamps or from current source would be fabrication.",
+    "training_configuration": null,
+    "training_dataset_sha256": null,
+    "training_environment": null,
+    "training_run_id": null,
+    "training_started_at": null
+  }
+}

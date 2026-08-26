@@ -23,6 +23,7 @@ from sklearn.metrics import (
 )
 from xgboost import XGBClassifier
 
+from ml_core import provenance
 from ml_core import (
     bootstrap_confidence_interval,
     compute_youden_threshold,
@@ -45,6 +46,7 @@ MODEL_BUNDLE_PATH = ARTIFACTS_DIR / "boosted_model_bundle.pkl"
 METRICS_PATH = ARTIFACTS_DIR / "boosted_metrics.json"
 SHAP_PATH = ARTIFACTS_DIR / "boosted_shap_explainer.pkl"
 DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
+PROVENANCE_PATH = ARTIFACTS_DIR / "boosted_training_manifest.json"
 
 N_BOOTSTRAP = 200
 
@@ -337,6 +339,62 @@ def main() -> None:
         json.dump(metrics_output, f, indent=2)
     print(f"💾 Metrics saved: {METRICS_PATH}")
 
+    # ------------------------------------------------------------------
+    # Provenance manifest - written LAST, after every artifact above is on
+    # disk, so its hashes attest to completed outputs. If anything above
+    # failed, no manifest is produced at all.
+    # ------------------------------------------------------------------
+    provenance.emit_training_manifest(
+        project_root=PROJECT_ROOT,
+        output_path=PROVENANCE_PATH,
+        variant="B",
+        model_name="xgboost_boosted_trees",
+        dataset_path=DATA_PATH,
+        target_column=TARGET_COLUMN,
+        feature_names=SELECTED_FEATURES,
+        training={
+            "random_state": RANDOM_STATE,
+            "test_size": 0.2,
+            "validation_size_of_train": 0.25,
+            "stratified": True,
+            "scaler": None,
+            "optuna_sampler": "TPESampler",
+            "optuna_sampler_seed": RANDOM_STATE,
+            "optuna_n_trials": 50,
+            "optuna_direction": "maximize",
+            "optuna_best_params": best_params,
+            "optuna_best_cv_auc": study.best_value,
+            "cv_splits": 5,
+            "calibration_method": "sigmoid",
+            "calibration_cv": 5,
+            "threshold_method": "youden_j",
+            "selected_threshold": best_threshold,
+            "n_bootstrap": N_BOOTSTRAP,
+            "bootstrap_alpha": 0.05,
+            "artifacts_dir": provenance.relative_path(ARTIFACTS_DIR, PROJECT_ROOT),
+        },
+        evaluation={
+            "validation_metrics": val_metrics,
+            "test_metrics": test_metrics,
+            "confidence_intervals": ci_results,
+        },
+        artifact_specs=[
+            ("model_bundle", MODEL_BUNDLE_PATH, True),
+            ("shap_explainer", SHAP_PATH, True),
+            ("drift_baseline", DRIFT_BASELINE_PATH, True),
+            ("metrics", METRICS_PATH, True),
+        ],
+        source_files=[
+            Path(__file__).resolve(),
+            PROJECT_ROOT / "ml_core" / "evaluation.py",
+            PROJECT_ROOT / "ml_core" / "bootstrap.py",
+            PROJECT_ROOT / "ml_core" / "thresholds.py",
+            PROJECT_ROOT / "ml_core" / "provenance.py",
+        ],
+        lockfile=PROJECT_ROOT / "requirements.lock",
+    )
+    print(f"💾 Provenance manifest saved: {PROVENANCE_PATH}")
+
     print("\n" + "=" * 60)
     print("✅ XGBoost pipeline complete!")
     print(f"   - Optuna trials: 50")
@@ -370,4 +428,5 @@ if __name__ == "__main__":
     METRICS_PATH = ARTIFACTS_DIR / "boosted_metrics.json"
     SHAP_PATH = ARTIFACTS_DIR / "boosted_shap_explainer.pkl"
     DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
+    PROVENANCE_PATH = ARTIFACTS_DIR / "boosted_training_manifest.json"
     main()

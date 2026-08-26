@@ -32,6 +32,7 @@ from sklearn.metrics import (
     classification_report,
 )
 
+from ml_core import provenance
 from ml_core import (
     bootstrap_confidence_interval,
     compute_youden_threshold,
@@ -55,6 +56,7 @@ METRICS_PATH = ARTIFACTS_DIR / "metrics.json"
 PREDICTIONS_PATH = ARTIFACTS_DIR / "test_predictions.csv"
 SHAP_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
 DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "drift_baseline.pkl"
+PROVENANCE_PATH = ARTIFACTS_DIR / "training_manifest.json"
 
 N_BOOTSTRAP = 200  # bootstrap iterations for confidence intervals
 
@@ -439,6 +441,63 @@ def main() -> None:
     predictions_df.to_csv(PREDICTIONS_PATH, index=False)
     print(f"💾 Test predictions saved: {PREDICTIONS_PATH}")
 
+    # ------------------------------------------------------------------
+    # Provenance manifest - written LAST, after every artifact above is on
+    # disk, so its hashes attest to completed outputs. If anything above
+    # failed, no manifest is produced at all.
+    # ------------------------------------------------------------------
+    provenance.emit_training_manifest(
+        project_root=PROJECT_ROOT,
+        output_path=PROVENANCE_PATH,
+        variant="A",
+        model_name="logistic_regression",
+        dataset_path=DATA_PATH,
+        target_column=TARGET_COLUMN,
+        feature_names=SELECTED_FEATURES,
+        training={
+            "random_state": RANDOM_STATE,
+            "test_size": 0.2,
+            "validation_size_of_train": 0.25,
+            "stratified": True,
+            "scaler": "StandardScaler",
+            "optuna_sampler": "TPESampler",
+            "optuna_sampler_seed": RANDOM_STATE,
+            "optuna_n_trials": 100,
+            "optuna_direction": "maximize",
+            "optuna_best_params": best_params,
+            "optuna_best_cv_auc": study.best_value,
+            "cv_splits": 5,
+            "calibration_method": "sigmoid",
+            "calibration_cv": 5,
+            "threshold_method": "youden_j",
+            "selected_threshold": best_threshold,
+            "n_bootstrap": N_BOOTSTRAP,
+            "bootstrap_alpha": 0.05,
+            "artifacts_dir": provenance.relative_path(ARTIFACTS_DIR, PROJECT_ROOT),
+        },
+        evaluation={
+            "validation_metrics": val_metrics,
+            "test_metrics": test_metrics,
+            "confidence_intervals": ci_results,
+        },
+        artifact_specs=[
+            ("model_bundle", MODEL_BUNDLE_PATH, True),
+            ("shap_explainer", SHAP_PATH, True),
+            ("drift_baseline", DRIFT_BASELINE_PATH, True),
+            ("metrics", METRICS_PATH, True),
+            ("test_predictions", PREDICTIONS_PATH, False),
+        ],
+        source_files=[
+            Path(__file__).resolve(),
+            PROJECT_ROOT / "ml_core" / "evaluation.py",
+            PROJECT_ROOT / "ml_core" / "bootstrap.py",
+            PROJECT_ROOT / "ml_core" / "thresholds.py",
+            PROJECT_ROOT / "ml_core" / "provenance.py",
+        ],
+        lockfile=PROJECT_ROOT / "requirements.lock",
+    )
+    print(f"💾 Provenance manifest saved: {PROVENANCE_PATH}")
+
     print("\n" + "=" * 60)
     print("✅ Logistic Regression pipeline complete!")
     print(f"   - Optuna trials: 100")
@@ -474,6 +533,7 @@ if __name__ == "__main__":
     PREDICTIONS_PATH = ARTIFACTS_DIR / "test_predictions.csv"
     SHAP_PATH = ARTIFACTS_DIR / "shap_explainer.pkl"
     DRIFT_BASELINE_PATH = ARTIFACTS_DIR / "drift_baseline.pkl"
+    PROVENANCE_PATH = ARTIFACTS_DIR / "training_manifest.json"
     main()
 
 
