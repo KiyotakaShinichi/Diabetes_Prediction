@@ -74,6 +74,59 @@ Full training remains offline and reproducible via the commands below. It is
 **not** run in normal CI - CI exercises the shared utilities and verifies that
 the committed artifacts still load, rather than retraining models.
 
+### Provenance and artifact integrity
+
+**Artifact integrity is not proof of historical training provenance.** The two
+are tracked separately and deliberately never conflated.
+
+**Current committed artifacts - integrity-attested, lineage incomplete.**
+`provenance/legacy_artifact_attestation.json` is an inventory of the artifacts
+in `model_artifacts/` as they exist today: SHA256, byte size, the library
+versions read out of each file, and which ones the serving code actually loads.
+Those artifacts predate this system, so no run record was kept for them. Every
+historical field - `producer_git_sha`, `training_run_id`,
+`training_dataset_sha256`, `training_started_at`, `training_configuration`,
+`training_environment` - is an explicit `null`. Reconstructing them from file
+timestamps or from what the current code happens to do would be fabrication, so
+the repository does not claim that HEAD produced these models, and the current
+dataset hash is labelled as *today's* dataset rather than the training input.
+
+The attestation also separates the eight artifacts serving code loads from four
+that nothing loads - including `diabetes_model.pkl` and `scaler.pkl`, which
+carry scikit-learn **1.7.1**, older than the served bundles. A test cross-checks
+every `required_for_serving` flag against the actual serving source, so a dead
+artifact cannot quietly become a dependency.
+
+**Future training runs - full provenance, automatically.** Both maintained
+pipelines now emit a `training_run` manifest
+(`model_artifacts/training_manifest.json` and `boosted_training_manifest.json`)
+as their **last** step, after every artifact and the metrics file are on disk,
+written atomically via a temp file and `os.replace`. A run that fails part way
+leaves no manifest at all. Each records the dataset fingerprint, the ordered
+feature schema and its hash, the git commit **and whether the tree was dirty**,
+hashes of the exact training source files, the installed package versions and
+lockfile hash, the full training configuration (seed, splits, Optuna sampler and
+trial count, best hyperparameters, calibration, threshold method and selected
+threshold, bootstrap settings), the evaluation metrics, and a hashed inventory
+of every artifact produced.
+
+Verify any manifest, or all of them:
+
+```powershell
+python tools/verify_provenance.py
+python tools/build_artifact_attestation.py --check
+```
+
+Both exit non-zero on any mismatch, and CI runs them on every push. Regenerate
+the attestation - only when the artifacts legitimately change - with:
+
+```powershell
+python tools/build_artifact_attestation.py
+```
+
+Manifests contain no absolute developer paths, no environment variables and no
+secrets; the verifier rejects a manifest that carries an absolute path.
+
 ### Data and Artifacts
 
 - `cleaned_data.csv`: Main training dataset

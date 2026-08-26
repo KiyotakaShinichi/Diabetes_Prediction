@@ -66,6 +66,15 @@ jobs:
       - name: Verify committed model artifacts load under the lock
         run: python -m pytest -q tests/test_artifact_compatibility.py
 
+      - name: Verify committed artifact attestation
+        # Fails if a serving artifact changed, disappeared, or was replaced
+        # without regenerating the attestation. This is an integrity gate only -
+        # it does not claim the artifacts' historical training provenance, which
+        # was never recorded and is explicitly null in the attestation.
+        run: |
+          python tools/verify_provenance.py
+          python tools/build_artifact_attestation.py --check
+
       - name: Run test suite
         env:
           # Guarantee no test can reach a real database, even if a repository
