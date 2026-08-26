@@ -93,6 +93,7 @@ def build_boosted_drift_baseline(X_train: pd.DataFrame) -> dict:
 PIPELINE_SPEC = pipeline.PipelineSpec(
     variant="B",
     model_name="xgboost_boosted_trees",
+    entrypoint="boostedtrees_ab.py",
     scaler=None,
     filenames=MappingProxyType({
         "model_bundle": "boosted_model_bundle.pkl",

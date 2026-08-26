@@ -175,3 +175,56 @@ def test_shared_module_does_not_import_the_pipelines_back():
 
     for name in ("logisticregression_only", "boostedtrees_ab"):
         assert name not in source
+
+
+# ======================================== the manifest still attests everything
+
+#: What each pipeline fingerprinted into its manifest before the extraction:
+#: its own script (as Path(__file__)) plus the ml_core modules it imported.
+#: The shared emitter cannot see its caller, so the entrypoint is named in the
+#: spec instead - and this test exists because that indirection is exactly how
+#: a manifest could quietly stop attesting the code that produced the models.
+PRE_EXTRACTION_SOURCES = frozenset({
+    "evaluation.py", "bootstrap.py", "thresholds.py",
+    "training.py", "feature_contract.py", "provenance.py",
+})
+
+
+@pytest.mark.parametrize(
+    ("module", "entrypoint"),
+    [pytest.param(lr_pipeline, "logisticregression_only.py", id="logistic_regression"),
+     pytest.param(xgb_pipeline, "boostedtrees_ab.py", id="boosted_trees")],
+)
+def test_manifest_attests_the_entrypoint_and_every_shared_module(module, entrypoint):
+    attested = shared_pipeline.attested_source_files(
+        module.PIPELINE_SPEC, shared_pipeline.PROJECT_ROOT
+    )
+    names = {path.name for path in attested}
+
+    assert entrypoint in names, "the training script is no longer fingerprinted"
+    assert names >= PRE_EXTRACTION_SOURCES, "provenance coverage shrank"
+    assert names >= set(shared_pipeline.SOURCE_MODULES)
+    assert all(path.is_file() for path in attested), "a fingerprinted file is missing"
+    assert len(attested) == len(names), "a file is fingerprinted twice"
+
+
+@pytest.mark.parametrize(
+    "module",
+    [pytest.param(lr_pipeline, id="logistic_regression"),
+     pytest.param(xgb_pipeline, id="boosted_trees")],
+)
+def test_a_run_rooted_outside_the_repository_attests_no_source(module, tmp_path):
+    """Unchanged: a manifest may only claim what it can actually observe."""
+    assert shared_pipeline.attested_source_files(module.PIPELINE_SPEC, tmp_path) == []
+
+
+def test_the_shared_module_fingerprints_itself():
+    """ml_core/pipeline.py now holds training logic, so it must be attested."""
+    assert "pipeline.py" in shared_pipeline.SOURCE_MODULES
+
+
+def test_each_entrypoint_names_its_own_file():
+    assert lr_pipeline.PIPELINE_SPEC.entrypoint != xgb_pipeline.PIPELINE_SPEC.entrypoint
+    for module in (lr_pipeline, xgb_pipeline):
+        entrypoint = shared_pipeline.PROJECT_ROOT / module.PIPELINE_SPEC.entrypoint
+        assert entrypoint == Path(module.__file__).resolve()

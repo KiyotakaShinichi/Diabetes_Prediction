@@ -106,6 +106,7 @@ def build_logistic_drift_baseline(X_train: pd.DataFrame) -> dict:
 PIPELINE_SPEC = pipeline.PipelineSpec(
     variant="A",
     model_name="logistic_regression",
+    entrypoint="logisticregression_only.py",
     scaler="StandardScaler",
     filenames=MappingProxyType({
         "model_bundle": "model_bundle.pkl",

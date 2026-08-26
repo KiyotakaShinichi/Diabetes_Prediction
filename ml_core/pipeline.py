@@ -45,6 +45,10 @@ class PipelineSpec:
 
     variant: str
     model_name: str
+    #: Training script filename, relative to PROJECT_ROOT. Fingerprinted into
+    #: the manifest: it owns the estimator, the search space and the writers,
+    #: so a manifest without it would attest only half the producing code.
+    entrypoint: str
     scaler: str | None
     filenames: Mapping[str, str]
     #: Artifact roles that serving requires; anything else is written but optional.
@@ -252,6 +256,24 @@ def calibrate_estimator(
 
 # ---------------------------------------------------------- provenance
 
+def attested_source_files(spec: PipelineSpec, project_root: Path) -> list[Path]:
+    """Source files a manifest fingerprints: the entrypoint plus the ml_core modules.
+
+    The entrypoint is listed explicitly because this module cannot infer its
+    caller. Dropping it would quietly shrink what the manifest attests, leaving
+    the estimator, search space and writers unhashed.
+
+    A run rooted outside the repository attests no source at all - unchanged
+    behaviour, and the reason a manifest written into a scratch tree stays
+    honest about what it can observe.
+    """
+    if Path(project_root) != PROJECT_ROOT:
+        return []
+    return [PROJECT_ROOT / spec.entrypoint] + [
+        PROJECT_ROOT / "ml_core" / name for name in SOURCE_MODULES
+    ]
+
+
 def emit_pipeline_provenance(
     spec: PipelineSpec,
     paths: Mapping[str, Path],
@@ -280,10 +302,7 @@ def emit_pipeline_provenance(
         for role in spec.filenames
         if role != "provenance" and role in paths
     ]
-    source_files = (
-        [Path(project_root) / "ml_core" / name for name in SOURCE_MODULES]
-        if Path(project_root) == PROJECT_ROOT else []
-    )
+    source_files = attested_source_files(spec, project_root)
     lockfile = PROJECT_ROOT / "requirements.lock" if Path(project_root) == PROJECT_ROOT else None
 
     written = provenance.emit_training_manifest(
