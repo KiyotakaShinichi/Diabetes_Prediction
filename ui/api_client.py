@@ -19,6 +19,7 @@ that another branch owns.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,17 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 
 ENV_BASE_URL = "DIABETES_API_BASE_URL"
 ENV_TIMEOUT = "DIABETES_API_TIMEOUT_SECONDS"
+
+#: A bare ``host`` or ``host:port`` with no scheme.
+#:
+#: Render's Blueprint ``fromService`` with ``property: hostport`` resolves to
+#: exactly this shape - "diabetes-api:10000" - because it addresses the service
+#: over Render's private network, where there is no TLS terminator and so no
+#: scheme to report. Accepting the form lets the Blueprint wire the two
+#: services together with a service reference instead of a hardcoded hostname.
+_AUTHORITY = re.compile(
+    r"^(?P<host>[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)(?::(?P<port>\d{1,5}))?$"
+)
 
 #: Generous enough for a cold bundle load on a small instance, short enough that
 #: a visitor is told something went wrong rather than left watching a spinner.
@@ -52,6 +64,21 @@ class ApiError(Exception):
     def __init__(self, message: str = "", request_id: str | None = None) -> None:
         super().__init__(message or self.user_message)
         self.request_id = request_id
+
+
+class ApiConfigurationError(ApiError):
+    """The service address itself is misconfigured.
+
+    Distinct from every other member of this taxonomy: nothing is wrong with
+    the API or the network, so retrying cannot help. It is raised when the
+    deployment is built, not when a visitor submits, and needs an operator.
+    """
+
+    user_message = (
+        "This deployment is not configured to reach the risk service, so no "
+        "estimate can be calculated. The service operator needs to set the "
+        "inference API address."
+    )
 
 
 class ApiUnavailableError(ApiError):
@@ -146,9 +173,60 @@ class Prediction:
 
 
 def resolve_base_url(explicit: str | None = None) -> str:
-    """The API base URL: explicit argument, then environment, then loopback."""
-    candidate = explicit or os.getenv(ENV_BASE_URL, "").strip() or DEFAULT_BASE_URL
-    return candidate.rstrip("/")
+    """The API base URL: explicit argument, then environment, then loopback.
+
+    Three accepted forms, in the order an operator is likely to supply them:
+
+    * ``http://host[:port]`` or ``https://host[:port]`` - used as given;
+    * ``host[:port]`` with no scheme - the shape Render's ``fromService``
+      ``hostport`` produces for private-network addressing, normalised to
+      ``http://host[:port]``. Private traffic does not pass a TLS terminator,
+      so http is correct rather than a downgrade;
+    * nothing at all - loopback, for local development.
+
+    Anything else raises. Silently falling back to loopback on a malformed
+    value would turn an operator's typo into a production service that looks
+    healthy and can never reach its backend.
+
+    The value is operator-supplied configuration, never visitor input, so this
+    is a correctness guard rather than an SSRF boundary - but it still refuses
+    schemes other than http/https so a stray ``file://`` or ``ftp://`` cannot
+    become a request target.
+    """
+    candidate = (explicit or os.getenv(ENV_BASE_URL, "") or "").strip()
+    if not candidate:
+        return DEFAULT_BASE_URL
+
+    candidate = candidate.rstrip("/")
+    if not candidate:
+        raise ApiConfigurationError(
+            f"{ENV_BASE_URL} is only slashes; expected a URL or host:port."
+        )
+
+    lowered = candidate.lower()
+    if lowered.startswith(("http://", "https://")):
+        remainder = candidate.split("://", 1)[1]
+        authority = remainder.split("/", 1)[0]
+        if not authority or not _AUTHORITY.match(authority):
+            raise ApiConfigurationError(
+                f"{ENV_BASE_URL} is not a usable URL: {candidate!r}"
+            )
+        return candidate
+
+    if "://" in candidate:
+        scheme = candidate.split("://", 1)[0]
+        raise ApiConfigurationError(
+            f"{ENV_BASE_URL} must use http or https, not {scheme!r}."
+        )
+
+    if _AUTHORITY.match(candidate):
+        # Render's hostport form. Normalising here keeps one variable and one
+        # contract rather than a second host/port pair to keep in step.
+        return f"http://{candidate}"
+
+    raise ApiConfigurationError(
+        f"{ENV_BASE_URL} is neither a URL nor a host:port value: {candidate!r}"
+    )
 
 
 def resolve_timeout(explicit: float | None = None) -> float:

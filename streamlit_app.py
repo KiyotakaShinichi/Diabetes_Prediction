@@ -133,9 +133,16 @@ def main() -> None:
 
     metrics = load_evaluation_metrics()
     attestation = load_artifact_attestation()
-    client = build_client()
 
     public_components.render_header()
+
+    try:
+        client = build_client()
+    except api_client.ApiConfigurationError as error:
+        # A misconfigured deployment cannot serve anyone. Say so plainly and
+        # stop, rather than rendering a form whose every submission will fail.
+        st.error(error.user_message, icon=":material/error:")
+        st.stop()
 
     tab_assess, tab_about = st.tabs(["Risk assessment", "About this tool"])
 
