@@ -74,6 +74,51 @@ Full training remains offline and reproducible via the commands below. It is
 **not** run in normal CI - CI exercises the shared utilities and verifies that
 the committed artifacts still load, rather than retraining models.
 
+### Training lifecycle
+
+Both maintained pipelines are composed of independently callable stages rather
+than one long script, so any stage can be exercised on its own:
+
+```
+prepare -> optimize -> fit -> evaluate -> calibrate -> explain -> persist -> attest
+```
+
+`main()` in each pipeline is orchestration only. Concretely:
+
+| Stage | Logistic regression | Boosted trees |
+| --- | --- | --- |
+| prepare | `prepare_training_data` - loads, validates against the feature contract, splits 60/20/20 stratified | same |
+| optimize | `optimize_hyperparameters(splits, n_trials=...)` | same |
+| fit | `fit_final_pipeline` (StandardScaler + LogisticRegression) | `fit_final_model` (XGBClassifier, no scaler) |
+| threshold | `select_threshold` - Youden's J on the validation set | same |
+| calibrate | `calibrate_pipeline` (Platt, cv=5) | `calibrate_model` |
+| explain | `build_shap_explainer` (LinearExplainer) | `build_shap_explainer` (TreeExplainer) |
+| drift | `build_logistic_drift_baseline` (schema A) | `build_boosted_drift_baseline` (schema B) |
+| persist | `write_training_outputs(artifacts_dir, ...)` | same |
+| attest | `emit_provenance(...)` - written **last** | same |
+
+The two are deliberately not merged: the boosted variant has no scaler, uses a
+different SHAP explainer and emits a different drift schema.
+
+`ml_core/training.py` owns the genuinely shared parts - dataset loading, schema
+validation, the split, threshold-based evaluation and atomic JSON writing.
+`validate_training_dataset` checks the data actually provides what the feature
+contract promises: target present, binary, both classes; every canonical feature
+present, not duplicated, not entirely null, numeric or coercible.
+
+**Full production optimization is not run in CI.** The real runs use 100 trials
+(logistic) and 50 (boosted) over the full dataset and stay an offline operation.
+What CI does run is a set of **small real model fits** on a ~240-row synthetic
+fixture, which exercise the whole lifecycle end to end in seconds and verify the
+resulting manifest with the provenance verifier.
+
+> Those smoke runs verify **plumbing, not model quality**. They fit a few
+> hundred synthetic rows with a two-trial budget; their metrics are not evidence
+> about the committed models and are never compared against them.
+
+A real training run emits a full provenance manifest automatically as its last
+step - see the provenance section above.
+
 ### Provenance and artifact integrity
 
 **Artifact integrity is not proof of historical training provenance.** The two
