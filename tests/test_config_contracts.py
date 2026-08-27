@@ -134,6 +134,22 @@ def test_ci_workflow_uses_the_canonical_python_and_locks():
     assert "-r requirements-dev.lock" in text
 
 
+def test_ci_exposes_static_training_and_coverage_gates():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+
+    assert jobs["static"]["name"] == "Lint and typecheck"
+    static_steps = {step["name"]: step.get("run", "") for step in jobs["static"]["steps"]}
+    assert static_steps["Verify dependency source-to-lock contract"] == "python tools/verify_dependency_contract.py"
+    assert static_steps["Lint governed scope"] == "ruff check ."
+    assert static_steps["Typecheck owned stable modules"] == "python -m mypy"
+
+    test_steps = {step["name"]: step.get("run", "") for step in jobs["test"]["steps"]}
+    assert "tests/test_training_smoke.py" in test_steps["Run deterministic training smoke"]
+    assert "--ignore=tests/test_training_smoke.py" in test_steps["Run remaining test suite"]
+    assert test_steps["Enforce maintained-module coverage ratchet"] == "coverage report"
+
+
 def test_devcontainer_uses_the_canonical_python_family_and_lock():
     raw = DEVCONTAINER.read_text(encoding="utf-8")
     config = json.loads(re.sub(r"^\s*//.*$", "", raw, flags=re.MULTILINE))

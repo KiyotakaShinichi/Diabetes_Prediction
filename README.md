@@ -305,17 +305,30 @@ py -3.11 -m venv .venv
 
 ### 2. Install dependencies
 
-Everyday development - resolves fresh versions within the ranges declared in
-`requirements.txt`:
+Dependency ownership is intentionally split between human-maintained inputs and
+generated locks; there is no second package manifest:
+
+| File | Owner and purpose |
+| --- | --- |
+| `requirements.txt` | human-maintained direct runtime requirements |
+| `requirements-dev.txt` | human-maintained direct development/CI requirements |
+| `requirements.lock` | generated, exact universal runtime resolution |
+| `requirements-dev.lock` | generated, exact universal development resolution constrained by the runtime lock |
+
+For a clean or CI-equivalent environment, install only the committed locks:
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock
+python -m pip install -r requirements-dev.lock
+python -m pip check
+```
+
+The direct source files are for intentional dependency changes and local
+resolution experiments:
 
 ```powershell
 python -m pip install -r requirements.txt -r requirements-dev.txt
-```
-
-Reproducible install - exact, fully pinned transitive dependency set:
-
-```powershell
-python -m pip install -r requirements.lock -r requirements-dev.lock
 ```
 
 `requirements.lock` is generated, not hand-edited. It is a *universal*
@@ -335,7 +348,15 @@ version. This is what CI installs. Regenerate it after changing
 
 ```powershell
 uv pip compile --universal --python-version 3.11 --constraint requirements.lock --output-file requirements-dev.lock requirements-dev.txt
+python tools/verify_dependency_contract.py
 ```
+
+The verifier checks that all four files are tracked and non-empty, every direct
+dependency (including the public client's `requests` transport) is pinned within
+its declared range, shared runtime/dev pins agree, and each lock identifies its
+canonical input. A separate `uv.lock` or Poetry/Pipenv manifest is deliberately
+not generated: pip requirements plus `uv pip compile` are the operational
+contract, and adding another lock would create redundant dependency truth.
 
 ### 3. Configure the environment (optional for local use)
 
@@ -352,15 +373,27 @@ export the variables or pass them to Docker/Render. `.env` is gitignored;
 Admin authentication has **not** been hardened yet - if the admin variables are
 unset, the code still falls back to a built-in default account. Set them.
 
-### 4. Run the test suite and linter
+### 4. Run quality gates
 
 The suite is self-contained: no network, no PostgreSQL, and no retraining. It
 uses a temporary SQLite database, so it never touches `data/`.
 
 ```powershell
+python tools/verify_dependency_contract.py
 python -m pytest -q
 ruff check .
+python -m mypy
+coverage run -m pytest -q
+coverage report
+python -m pytest -q tests/test_training_smoke.py
+python tools/verify_provenance.py
+python tools/build_artifact_attestation.py --check
 ```
+
+`python -m mypy` checks `ml_core/`, `experiment_config.py`, and `tools/` as
+declared in `pyproject.toml`. Coverage uses branch measurement over the same
+stable owned module boundary and enforces a conservative 90% combined ratchet;
+historical experiments are excluded instead of being counted as artificial 0%.
 
 `tests/test_artifact_compatibility.py` additionally proves the committed model
 bundles still load under the locked dependency set without raising
@@ -368,9 +401,11 @@ bundles still load under the locked dependency set without raising
 dependency bump makes an artifact incompatible, so the choice becomes explicit:
 revert the bump, or retrain and recommit the artifacts.
 
-`ruff check .` lints a **governed subset** of the repository - `app.py`,
-`inference_db.py`, `conftest.py` and `tests/`. The unmaintained training
-experiments are out of scope; `ruff.toml` records the exact boundary and why.
+`ruff check .` governs maintained runtime modules, shared UI and ML modules,
+tools, tests, and both maintained training pipelines. Historical root-level
+studies remain narrowly excluded; [experiments/README.md](experiments/README.md)
+records every script's status, expected dataset, output location, and known
+reproducibility hazards.
 
 ## Continuous Integration
 
@@ -379,7 +414,8 @@ against the same canonical Python 3.11 and the same committed lockfiles:
 
 | Job | What it proves |
 | --- | --- |
-| Lint, tests and artifact compatibility | `ruff check .`, the full pytest suite, model artifacts load warning-free, `compileall` plus an import smoke, and the working tree is still clean afterwards |
+| Lint and typecheck | dependency inputs and locks agree, `ruff check .` governs maintained code, and mypy checks the owned stable scope |
+| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% coverage ratchet, `compileall`, import safety, and a clean tree |
 | Docker build and health smoke | the image builds, reports Python 3.11, answers `/health`, serves a real `/predict`, and logs no serialization-version warning |
 | Dependency vulnerability audit | `pip-audit` over both lockfiles |
 
@@ -429,7 +465,9 @@ They expect `cleaned_data_upd.csv`, a renamed variant with the target column
 `DiabetesStatus`, which is **not committed** - the repository ships
 `cleaned_data.csv` (target `Diabetes_binary`) instead. The two schemas are not
 interchangeable, so supply your own copy with `--data-path`. Results default to
-the gitignored `experiment_results/`.
+the gitignored `experiment_results/`. Their maintained/historical/dead
+classification and known hazards are inventoried in
+[experiments/README.md](experiments/README.md).
 
 Expected key outputs in `model_artifacts/`:
 
@@ -458,6 +496,13 @@ streamlit run streamlit_app.py --server.port 8501
 
 # Admin dashboard (internal only)
 streamlit run admin_app.py --server.port 8502
+```
+
+Or build and smoke the API container from the same production lock:
+
+```powershell
+docker build --tag diabetes-api:local .
+docker run --rm --publish 8000:8000 --env DATABASE_URL= diabetes-api:local
 ```
 
 The public UI cannot produce an estimate without the API running: it performs
