@@ -6,6 +6,7 @@ python_version = "3.11"
 # convenient subset of it.
 files = [
     "ml_core",
+    "research",
     "tools",
     "ui",
     "app.py",
