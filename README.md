@@ -668,6 +668,14 @@ For deployment architecture and platform notes, see:
 
 - `README_DEPLOY.md`
 
+## Project History
+
+`CHANGELOG.md` records the engineering milestones, newest first, each citing the
+commit that completed it. No version has been released and no tag exists, so
+every entry sits under `Unreleased`. `experiments/README.md` is the companion
+inventory for the archival research scripts that sit outside the lint and
+typecheck boundary.
+
 ## Development Notes
 
 - If API startup fails due to missing artifacts, retrain variant A first.
