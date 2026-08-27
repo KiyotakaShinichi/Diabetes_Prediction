@@ -314,19 +314,30 @@ class DiabetesApiClient:
         self,
         features: Mapping[str, float],
         *,
-        user_id: str = "anonymous",
+        user_id: str | None = None,
         model_variant: str = "auto",
     ) -> Prediction:
         """Score one profile.
 
         ``model_variant="auto"`` leaves A/B assignment to the API, which buckets
-        deterministically on ``user_id``. The UI passes a stable per-session id
-        and reads the chosen variant back off the response.
+        deterministically on ``user_id``. The public UI passes a stable
+        per-session identifier and reads the chosen variant back off the
+        response.
+
+        ``user_id`` is an experiment assignment key, not an authenticated
+        identity, and it is genuinely optional: when it is None the parameter is
+        omitted from the request entirely rather than sent as a placeholder, so
+        the API can record the request as unassigned instead of attributing it
+        to a shared fictitious subject.
         """
+        params: dict[str, str] = {"model_variant": model_variant}
+        if user_id:
+            params["user_id"] = user_id
+
         body = self._post(
             "/predict",
             json_body=dict(features),
-            params={"user_id": user_id, "model_variant": model_variant},
+            params=params,
         )
         try:
             return Prediction(

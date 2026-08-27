@@ -97,8 +97,18 @@ def test_variant_a_serves_the_logistic_regression_bundle(client, valid_payload):
     assert body["model_name"] == "logistic_regression"
 
 
-@pytest.mark.parametrize("user_id", ["anonymous", "user-1", "user-2", "", "a-very-long-user-identifier"])
+@pytest.mark.parametrize(
+    "user_id", ["anonymous", "user-1", "user-2", "a-very-long-user-identifier"]
+)
 def test_auto_variant_matches_the_pure_assignment_function(client, valid_payload, user_id):
+    """A SUPPLIED key is bucketed by the pure function, exactly as before.
+
+    The empty string was dropped from this list: it now means "no key" rather
+    than being a bucketing input, and is covered by the unassigned cases in
+    tests/test_assignment_semantics.py. It happens to hash to the same variant
+    those requests are served, so leaving it here would have kept passing by
+    coincidence rather than by contract.
+    """
     body = client.post(
         "/predict", json=valid_payload, params={"model_variant": "auto", "user_id": user_id}
     ).json()
