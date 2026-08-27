@@ -231,7 +231,29 @@ def stub_api(monkeypatch):
         def log_message(self, *_args):
             """Keep the test output clean."""
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    class StubServer(ThreadingHTTPServer):
+        """Teardown must not wait on a handler the test deliberately abandoned.
+
+        ThreadingHTTPServer sets daemon_threads = True but inherits
+        block_on_close = True, and with that combination server_close() JOINS
+        every handler thread. The timeout test scripts a two-second delay and
+        gives up on it after 0.3s, so the abandoned handler would hold teardown
+        open and push its remaining sleep into whichever test ran next - real
+        cross-test timing coupling rather than a race.
+
+        Setting block_on_close = False lets the daemon handler finish on its
+        own. handle_error is silenced because that handler will write to a
+        socket the client has already closed, which is expected here and would
+        otherwise print a traceback for a working test.
+        """
+
+        block_on_close = False
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            """Expected when a test abandons a slow response."""
+
+    server = StubServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}"

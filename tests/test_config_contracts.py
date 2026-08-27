@@ -355,3 +355,87 @@ def test_every_changelog_commit_reference_exists():
             cwd=REPO_ROOT, capture_output=True, text=True,
         )
         assert result.stdout.strip() == "commit", f"{sha} is not a commit in this repository"
+
+
+# ------------------------------------------------------- container liveness
+
+def dockerfile_healthcheck() -> str:
+    """The HEALTHCHECK instruction, with line continuations folded."""
+    # Normalise line endings before folding: the working tree is CRLF on
+    # Windows and LF in the repository and on CI, so handling only one form
+    # would see a truncated instruction on the other platform.
+    raw = DOCKERFILE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    text = raw.replace("\\\n", " ")
+    for line in text.splitlines():
+        if line.strip().upper().startswith("HEALTHCHECK"):
+            return line.strip()
+    return ""
+
+
+def test_the_image_declares_a_healthcheck():
+    """An orchestrator cannot restart an unhealthy container without one."""
+    assert dockerfile_healthcheck(), "Dockerfile declares no HEALTHCHECK"
+
+
+def test_the_healthcheck_targets_the_real_health_endpoint():
+    instruction = dockerfile_healthcheck()
+
+    assert "/health" in instruction
+    # The port the image actually serves on, per its CMD.
+    assert "8000" in instruction
+
+
+def test_the_healthcheck_needs_no_extra_package():
+    """curl is absent from python:slim; adding one just to probe is waste."""
+    instruction = dockerfile_healthcheck()
+
+    assert "curl" not in instruction
+    assert "wget" not in instruction
+    assert "python" in instruction
+
+
+def test_the_healthcheck_declares_sensible_timings():
+    instruction = dockerfile_healthcheck()
+
+    for flag in ("--interval=", "--timeout=", "--start-period=", "--retries="):
+        assert flag in instruction, f"HEALTHCHECK omits {flag}"
+
+
+def test_the_healthcheck_command_is_valid_python():
+    """Parse the probe rather than trusting the string.
+
+    A syntax error inside the -c payload would only surface as a permanently
+    unhealthy container at runtime.
+    """
+    import ast
+
+    instruction = dockerfile_healthcheck()
+    match = re.search(r'"-c",\s*"(.+?)"\s*\]', instruction)
+    assert match, f"could not extract the probe from: {instruction}"
+
+    probe = match.group(1).replace('\\"', '"').replace("\'", "'")
+    ast.parse(probe)
+    assert "urlopen" in probe
+    assert "sys.exit" in probe
+
+
+def test_the_healthcheck_probes_loopback_only():
+    """A probe reaching outside the container would test the wrong thing."""
+    instruction = dockerfile_healthcheck()
+
+    assert "127.0.0.1" in instruction or "localhost" in instruction
+    assert "http://" in instruction and "https://" not in instruction
+
+
+def test_the_healthcheck_exposes_no_credential():
+    instruction = dockerfile_healthcheck().lower()
+
+    for secret in ("password", "token", "secret", "api_key", "@"):
+        assert secret not in instruction, f"HEALTHCHECK leaks {secret!r}"
+
+
+def test_health_remains_defined_exactly_once():
+    """The probe must reuse the endpoint, never duplicate it."""
+    app_source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert app_source.count('@app.get("/health")') == 1

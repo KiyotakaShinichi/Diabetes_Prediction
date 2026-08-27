@@ -282,9 +282,9 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
             result.append(item)
         return result
 
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
+    with sqlite3.connect(db_path) as sqlite_conn:
+        sqlite_conn.row_factory = sqlite3.Row
+        sqlite_rows = sqlite_conn.execute(
             """
             SELECT id, request_id, model_variant, model_name, probability,
                    prediction, threshold, payload_json, created_at
@@ -295,12 +295,12 @@ def fetch_recent_logs(limit: int = 100, db_path: Path | None = None) -> list[dic
             (limit,),
         ).fetchall()
 
-    result: list[dict[str, Any]] = []
-    for row in rows:
+    decoded: list[dict[str, Any]] = []
+    for row in sqlite_rows:
         item = dict(row)
         item["payload"] = _decode_payload(item.pop("payload_json", None), item.get("id"))
-        result.append(item)
-    return result
+        decoded.append(item)
+    return decoded
 
 
 #: Columns every read returns, in a fixed order so both backends agree.
@@ -372,12 +372,17 @@ def fetch_logs(
 
         with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(statement.replace("?", "%s"), tuple(values))
-            columns = [description[0] for description in cur.description]
-            rows = [dict(zip(columns, record, strict=True)) for record in cur.fetchall()]
-        return [_row_to_dict(row) for row in rows]
+            # cursor.description is None for a statement that returns no result
+            # set. A SELECT always populates it, but reading it unguarded would
+            # turn any future change here into a TypeError rather than an empty
+            # listing.
+            description = cur.description or []
+            columns = [column[0] for column in description]
+            fetched = [dict(zip(columns, record, strict=True)) for record in cur.fetchall()]
+        return [_row_to_dict(row) for row in fetched]
 
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(statement, tuple(values)).fetchall()
+    with sqlite3.connect(db_path) as sqlite_conn:
+        sqlite_conn.row_factory = sqlite3.Row
+        sqlite_rows = sqlite_conn.execute(statement, tuple(values)).fetchall()
 
-    return [_row_to_dict(row) for row in rows]
+    return [_row_to_dict(dict(row)) for row in sqlite_rows]

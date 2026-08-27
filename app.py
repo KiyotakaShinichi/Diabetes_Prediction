@@ -110,7 +110,10 @@ def _load_bundle_cached(path_str: str, _mtime_ns: int, _size: int) -> dict:
     restart, while readiness probes and repeated predictions do not
     re-deserialize the pickle every call.
     """
-    return joblib.load(Path(path_str))
+    bundle = joblib.load(Path(path_str))
+    if not isinstance(bundle, dict):
+        raise TypeError(f"bundle is {type(bundle).__name__}, expected a mapping")
+    return bundle
 
 
 def load_model_bundle(path: Path) -> dict:

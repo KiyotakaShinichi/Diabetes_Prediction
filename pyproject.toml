@@ -1,6 +1,20 @@
 [tool.mypy]
 python_version = "3.11"
-files = ["ml_core", "experiment_config.py", "tools"]
+# The runtime joined this scope during the I-C/J integration, once the
+# nineteen findings a diagnostic run surfaced were fixed rather than silenced.
+# Nothing here is excluded, so "typechecked" means the served code, not a
+# convenient subset of it.
+files = [
+    "ml_core",
+    "tools",
+    "ui",
+    "app.py",
+    "admin_app.py",
+    "admin_auth.py",
+    "experiment_config.py",
+    "inference_db.py",
+    "streamlit_app.py",
+]
 check_untyped_defs = true
 disallow_untyped_defs = true
 no_implicit_optional = true
@@ -11,7 +25,7 @@ show_error_codes = true
 # These libraries do not publish complete PEP 561 typing metadata. The override
 # is limited to import discovery; errors in this repository remain enabled.
 [[tool.mypy.overrides]]
-module = ["pandas", "sklearn.*"]
+module = ["pandas", "sklearn.*", "joblib"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

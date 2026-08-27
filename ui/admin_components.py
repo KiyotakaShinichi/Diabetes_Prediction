@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -254,13 +254,13 @@ def drift_baseline_accessor(baseline: Mapping[str, Any]) -> tuple[list[str], Any
         n_train = baseline.get("n_train", "N/A")
 
         def get_stat(feature: str, statistic: str) -> float:
-            return baseline[statistic][feature]
+            return float(baseline[statistic][feature])
     else:
         feature_cols = list(baseline.keys())
         n_train = "N/A"
 
         def get_stat(feature: str, statistic: str) -> float:
-            return baseline[feature][_LR_STAT_KEYS[statistic]]
+            return float(baseline[feature][_LR_STAT_KEYS[statistic]])
 
     return feature_cols, n_train, get_stat
 
@@ -282,7 +282,7 @@ def render_baseline_distribution(feature_cols: list[str], get_stat: Callable[[st
     st.dataframe(pd.DataFrame(dist_rows), use_container_width=True, hide_index=True)
 
 
-def parse_logged_payloads(recent_logs: list[Mapping[str, Any]]) -> list[dict]:
+def parse_logged_payloads(recent_logs: Sequence[Mapping[str, Any]]) -> list[dict]:
     """Payload dictionaries from log rows, skipping any row that will not parse."""
     parsed = []
     for entry in recent_logs:

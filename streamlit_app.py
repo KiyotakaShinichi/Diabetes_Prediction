@@ -45,7 +45,8 @@ def load_evaluation_metrics() -> dict:
         return {}
 
     with open(METRICS_PATH, encoding="utf-8") as handle:
-        return json.load(handle)
+        loaded = json.load(handle)
+    return loaded if isinstance(loaded, dict) else {}
 
 
 @st.cache_data
@@ -61,7 +62,8 @@ def load_artifact_attestation() -> dict:
         return {}
 
     with open(ATTESTATION_PATH, encoding="utf-8") as handle:
-        return json.load(handle)
+        loaded = json.load(handle)
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def build_client() -> api_client.DiabetesApiClient:
@@ -73,7 +75,7 @@ def visitor_id() -> str:
     """A stable id for this browser session, created on first use."""
     if VISITOR_KEY not in st.session_state:
         st.session_state[VISITOR_KEY] = str(uuid.uuid4())
-    return st.session_state[VISITOR_KEY]
+    return str(st.session_state[VISITOR_KEY])
 
 
 def request_assessment(client: api_client.DiabetesApiClient, payload: dict) -> dict:
@@ -178,16 +180,16 @@ def main() -> None:
 
         # Rendered from session state, so a rerun that is not a submission
         # (switching tabs, resizing) does not erase the visitor's result.
-        result = st.session_state.get(RESULT_KEY)
-        if result is not None:
+        completed = st.session_state.get(RESULT_KEY)
+        if completed is not None:
             st.header("Your result")
-            public_components.render_result(result)
-            public_components.render_answers(result)
-            public_components.render_explanation_panel(result)
+            public_components.render_result(completed)
+            public_components.render_answers(completed)
+            public_components.render_explanation_panel(completed)
             public_components.render_performance_panel(
-                metrics, result.get("confidence_intervals")
+                metrics, completed.get("confidence_intervals")
             )
-            public_components.render_model_details(result, attestation)
+            public_components.render_model_details(completed, attestation)
 
     with tab_about:
         public_components.render_about(metrics)

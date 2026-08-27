@@ -45,7 +45,7 @@ def _configure_page() -> None:
     st.session_state.setdefault("admin_username", "")
 
 
-def login_page():
+def login_page() -> None:
     """Render login form."""
     st.title("Admin Login")
     st.write("This dashboard is restricted to authorized personnel.")
@@ -243,7 +243,7 @@ def render_drift_tab() -> None:
     admin_components.render_drift_analysis(feature_cols, get_stat, input_rows)
 
 
-def dashboard_page():
+def dashboard_page() -> None:
     """Render the admin analytics dashboard."""
     header_col1, header_col2, header_col3 = st.columns([3, 1, 1])
     header_col1.title("Inference Analytics Dashboard")
