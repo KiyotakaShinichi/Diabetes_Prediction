@@ -12,11 +12,23 @@
 #   uv pip compile --universal --python-version 3.11 \
 #       --constraint requirements.lock \
 #       --output-file requirements-dev.lock requirements-dev.txt
+# PyTorch is pulled from the CPU wheel index, not PyPI's default. On Linux the
+# default torch wheel drags in roughly a dozen nvidia-* CUDA packages and some
+# 2.5 GB of downloads, which CI neither needs nor should pay for: Track K's
+# models are small, run on CPU, and the deep-learning smoke gate must stay
+# light. The regenerated lock records torch==...+cpu with no CUDA dependency,
+# and --emit-index-url writes this index into the lock so
+# `pip install -r requirements-dev.lock` resolves it without extra flags.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 pytest>=8.3,<10
 httpx>=0.28,<1
 ruff>=0.13,<1
 mypy>=2.3,<3
 coverage[toml]>=7.15,<8
+# Track K deep-learning challengers (research only - production serving does
+# not load a neural network, so this is deliberately NOT a runtime dependency).
+torch>=2.4,<3
 # tests/test_config_contracts.py parses render.yaml and the CI workflow.
 # Also a transitive production dependency, so --constraint keeps it identical.
 pyyaml>=6,<7
