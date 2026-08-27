@@ -15,31 +15,33 @@ The lifecycle is decomposed into independently callable stages - prepare, optimi
 fit, calibrate, evaluate, explain, persist, attest - so each can be exercised
 without running the full 100-trial study. main() is orchestration only.
 """
+import warnings
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
-import warnings
 
 import joblib
 import numpy as np
-import pandas as pd
 import optuna
+import pandas as pd
 import shap
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
 )
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
-from ml_core import feature_contract, pipeline, training
 # evaluate_predictions is re-exported deliberately: tests treat the pipeline
 # module as the surface for the shared evaluation helpers.
 from ml_core import (  # noqa: F401
     bootstrap_confidence_interval,
     compute_youden_threshold,
     evaluate_predictions,
+    feature_contract,
+    pipeline,
+    training,
 )
 
 warnings.filterwarnings("ignore")

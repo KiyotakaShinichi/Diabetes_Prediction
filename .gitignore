@@ -1,6 +1,7 @@
 __pycache__/
 catboost_info/
 .venv/
+.venv*/
 *.pyc
 inference_log.db
 _test_*.py
@@ -25,6 +26,10 @@ data/
 # Test / lint caches
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Archived experiment outputs (see experiment_config.DEFAULT_RESULTS_DIR)
 experiment_results/

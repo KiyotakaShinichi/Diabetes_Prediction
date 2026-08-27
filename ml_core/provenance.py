@@ -26,9 +26,10 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 #: Bump when the manifest structure changes incompatibly.
 SCHEMA_VERSION = 1
@@ -151,7 +152,7 @@ def fingerprint_environment(lockfile: str | Path | None = None,
     return env
 
 
-def fingerprint_source(paths: list[str | Path], project_root: str | Path) -> dict:
+def fingerprint_source(paths: Sequence[str | Path], project_root: str | Path) -> dict:
     """Hash of the specific training source files, not the whole repository."""
     files = []
     for path in sorted(Path(p) for p in paths):
@@ -278,7 +279,7 @@ def build_training_manifest(
     training: dict,
     evaluation: dict,
     artifacts: list[dict],
-    source_files: list[str | Path],
+    source_files: Sequence[str | Path],
     lockfile: str | Path | None = None,
     run_id: str | None = None,
 ) -> dict:
@@ -437,7 +438,10 @@ def _verify_lockfile(manifest: dict, root: Path) -> list[str]:
 
 
 def load_manifest(path: str | Path) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    loaded = cast(object, json.loads(Path(path).read_text(encoding="utf-8")))
+    if not isinstance(loaded, dict):
+        raise ValueError("manifest root must be a JSON object")
+    return loaded
 
 
 def verify_manifest_file(path: str | Path, project_root: str | Path) -> list[str]:
@@ -481,8 +485,8 @@ def emit_training_manifest(
     feature_names: list[str],
     training: dict,
     evaluation: dict,
-    artifact_specs: list[tuple[str, str | Path, bool]],
-    source_files: list[str | Path],
+    artifact_specs: Sequence[tuple[str, str | Path, bool]],
+    source_files: Sequence[str | Path],
     lockfile: str | Path | None = None,
     run_id: str | None = None,
 ) -> Path:

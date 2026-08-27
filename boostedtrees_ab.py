@@ -13,26 +13,28 @@ Deliberately NOT forced into the logistic pipeline's abstractions: this variant
 has no scaler, uses a TreeExplainer rather than a LinearExplainer, and emits a
 different drift-baseline schema. Those are real differences, not incidental ones.
 """
+import warnings
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
-import warnings
 
 import joblib
 import numpy as np
-import pandas as pd
 import optuna
+import pandas as pd
 import shap
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from xgboost import XGBClassifier
 
-from ml_core import feature_contract, pipeline, training
 # evaluate_predictions is re-exported deliberately: tests treat the pipeline
 # module as the surface for the shared evaluation helpers.
 from ml_core import (  # noqa: F401
     bootstrap_confidence_interval,
     compute_youden_threshold,
     evaluate_predictions,
+    feature_contract,
+    pipeline,
+    training,
 )
 
 warnings.filterwarnings("ignore")

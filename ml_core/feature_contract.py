@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+import pandas as pd
+
 #: Target column of the served training dataset.
 TARGET_COLUMN = "Diabetes_binary"
 
@@ -154,7 +156,7 @@ def spec_for(name: str) -> FeatureSpec:
         raise KeyError(f"{name!r} is not a served feature; expected one of {FEATURE_NAMES}") from None
 
 
-def order_columns(frame):
+def order_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """Reindex a DataFrame into canonical feature order.
 
     Serving must never rely on dict insertion order, JSON key order or Pydantic
