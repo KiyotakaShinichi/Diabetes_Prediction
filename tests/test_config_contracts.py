@@ -439,3 +439,33 @@ def test_health_remains_defined_exactly_once():
     app_source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 
     assert app_source.count('@app.get("/health")') == 1
+
+
+def test_the_test_job_checks_out_full_history():
+    """The suite verifies historical commits, so a shallow checkout breaks it.
+
+    test_every_changelog_commit_reference_exists resolves each cited SHA with
+    git cat-file. actions/checkout defaults to fetch-depth 1, which fetches
+    only the tip - the ancestors are absent and correct references fail. This
+    pins the fix so the contract cannot be re-broken by a checkout tweak.
+    """
+    checkout = next(
+        step for step in workflow_jobs()["test"]["steps"]
+        if "checkout" in str(step.get("uses", ""))
+    )
+
+    assert str(checkout.get("with", {}).get("fetch-depth")) == "0"
+
+
+def test_only_the_history_dependent_job_pays_for_full_history():
+    """Lint, container smoke and audit read the working tree; keep them shallow."""
+    jobs = workflow_jobs()
+
+    for name in ("static", "docker", "audit"):
+        checkout = next(
+            step for step in jobs[name]["steps"]
+            if "checkout" in str(step.get("uses", ""))
+        )
+        assert "fetch-depth" not in (checkout.get("with") or {}), (
+            f"{name} does not need history"
+        )

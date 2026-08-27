@@ -75,6 +75,18 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow tip. This job runs the
+          # suite, and tests/test_config_contracts.py resolves every commit
+          # CHANGELOG.md cites with `git cat-file`, so a fabricated
+          # reference cannot pass review. Under fetch-depth 1 those
+          # ancestors are simply absent from the checkout and the contract
+          # fails on real, correct references.
+          #
+          # The other three jobs keep the shallow default: lint, typecheck,
+          # the container smoke and the dependency audit all read the
+          # working tree only.
+          fetch-depth: 0
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
