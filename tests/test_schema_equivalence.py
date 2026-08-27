@@ -215,8 +215,10 @@ def test_streamlit_numeric_bounds_come_from_the_contract():
         # resolves rather than raising at render time.
         assert feature_contract.spec_for(name).kind != "binary", name
 
-    entrypoint = (REPO_ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-    assert "feature_contract.order_columns(" in entrypoint
+    # Canonical ordering is enforced once, in the authoritative serving path.
+    # The public app no longer orders columns because it no longer scores.
+    served = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    assert "feature_contract.order_columns(" in served
 
 
 # ==================================================== provenance

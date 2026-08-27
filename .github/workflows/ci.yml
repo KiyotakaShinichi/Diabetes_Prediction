@@ -25,8 +25,8 @@ env:
   PYTHON_MINOR: "3.11"
 
 jobs:
-  test:
-    name: Lint, tests and artifact compatibility
+  static:
+    name: Lint and typecheck
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -47,6 +47,9 @@ jobs:
           python -m pip install -r requirements.lock
           python -m pip install -r requirements-dev.lock
 
+      - name: Verify dependency source-to-lock contract
+        run: python tools/verify_dependency_contract.py
+
       - name: Report resolved runtime
         run: |
           python - <<'PY'
@@ -63,6 +66,43 @@ jobs:
         # explicitly out of scope and documented as such.
         run: ruff check .
 
+      - name: Typecheck owned stable modules
+        run: python -m mypy
+
+  test:
+    name: Tests, artifacts, and training smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow tip. This job runs the
+          # suite, and tests/test_config_contracts.py resolves every commit
+          # CHANGELOG.md cites with `git cat-file`, so a fabricated
+          # reference cannot pass review. Under fetch-depth 1 those
+          # ancestors are simply absent from the checkout and the contract
+          # fails on real, correct references.
+          #
+          # The other three jobs keep the shallow default: lint, typecheck,
+          # the container smoke and the dependency audit all read the
+          # working tree only.
+          fetch-depth: 0
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.lock
+
+      - name: Install reproducible dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+          python -m pip install -r requirements-dev.lock
+
       - name: Verify committed model artifacts load under the lock
         run: python -m pytest -q tests/test_artifact_compatibility.py
 
@@ -75,12 +115,23 @@ jobs:
           python tools/verify_provenance.py
           python tools/build_artifact_attestation.py --check
 
-      - name: Run test suite
+      - name: Run deterministic training smoke
         env:
           # Guarantee no test can reach a real database, even if a repository
           # secret named DATABASE_URL is ever added.
           DATABASE_URL: ""
-        run: python -m pytest -q
+        run: coverage run -m pytest -q tests/test_training_smoke.py
+
+      - name: Run remaining test suite
+        env:
+          DATABASE_URL: ""
+        # The training-smoke module ran immediately above. Together these two
+        # invocations are the complete suite, without executing the fits twice.
+        run: coverage run --append -m pytest -q --ignore=tests/test_training_smoke.py
+
+      - name: Enforce maintained-module coverage ratchet
+        # pyproject.toml owns the measured scope and conservative 90% floor.
+        run: coverage report
 
       - name: Compile and import smoke
         # The Streamlit entrypoints are now import-safe, so they are imported

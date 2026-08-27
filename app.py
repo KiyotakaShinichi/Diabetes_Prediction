@@ -37,6 +37,28 @@ DRIFT_BASELINE_A = ARTIFACTS_DIR / "drift_baseline.pkl"
 DRIFT_BASELINE_B = ARTIFACTS_DIR / "boosted_drift_baseline.pkl"
 
 
+#: Variant served when a request supplies no assignment key.
+#:
+#: Such a request is not an experiment subject: nothing identifies it, so it
+#: cannot be followed across calls and must not be bucketed as though it could.
+#: It gets variant A, which is also the fallback when variant B artifacts are
+#: absent, rather than a hash of some placeholder string.
+UNASSIGNED_VARIANT = "A"
+
+
+def normalize_assignment_key(raw: str | None) -> str | None:
+    """The caller's assignment key, or None when they supplied none.
+
+    An omitted parameter, an empty value and a whitespace-only value all mean
+    the same thing: no key. Returning None for all three keeps one code path
+    for "unassigned" instead of letting "" become a bucketing input.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
 def choose_variant(user_id: str) -> str:
     """Deterministic A/B assignment based on user_id hash.
 
@@ -110,7 +132,10 @@ def _load_bundle_cached(path_str: str, _mtime_ns: int, _size: int) -> dict:
     restart, while readiness probes and repeated predictions do not
     re-deserialize the pickle every call.
     """
-    return joblib.load(Path(path_str))
+    bundle = joblib.load(Path(path_str))
+    if not isinstance(bundle, dict):
+        raise TypeError(f"bundle is {type(bundle).__name__}, expected a mapping")
+    return bundle
 
 
 def load_model_bundle(path: Path) -> dict:
@@ -257,7 +282,7 @@ def ready(response: Response) -> dict:
 @app.post("/predict")
 def predict(
     payload: DiabetesFeatures,
-    user_id: str = "anonymous",
+    user_id: str | None = None,
     model_variant: str = "auto"
 ) -> dict:
     """
@@ -265,14 +290,28 @@ def predict(
 
     Parameters:
     - payload: Clinical feature values
-    - user_id: Optional user identifier for A/B assignment
+    - user_id: OPTIONAL experiment assignment key, not an authenticated
+      identity. Supplying one makes A/B assignment deterministic and stable for
+      that key, and stores its SHA-256 digest so the assignment can be audited
+      later. Omitting it is fully supported: the request is served by
+      UNASSIGNED_VARIANT, no digest is stored, and it is not counted as an
+      experiment subject. The field name is retained for backward
+      compatibility with existing callers.
     - model_variant: 'auto' (A/B testing), 'A' (logistic regression), or 'B' (boosted trees)
 
     Returns:
     - Prediction result with probability and risk classification
     """
-    # A/B variant selection
-    selected_variant = choose_variant(user_id) if model_variant == "auto" else model_variant.upper()
+    # A/B variant selection. Only a supplied key is bucketed; without one there
+    # is no subject to keep stable, so hashing a placeholder would invent an
+    # experiment participant that does not exist.
+    assignment_key = normalize_assignment_key(user_id)
+    if model_variant == "auto":
+        selected_variant = (
+            choose_variant(assignment_key) if assignment_key else UNASSIGNED_VARIANT
+        )
+    else:
+        selected_variant = model_variant.upper()
     if selected_variant not in {"A", "B"}:
         raise HTTPException(status_code=400, detail="model_variant must be: auto, A, or B")
 
@@ -330,6 +369,12 @@ def predict(
             prediction=prediction,
             threshold=threshold,
             payload=payload_dict,
+            # The value A/B bucketing was computed from, or None when the
+            # caller supplied no key. Only a digest is ever stored, and it
+            # identifies an experiment assignment rather than a person: the
+            # public UI sends a random per-session value, and an unassigned
+            # request stores NULL rather than the hash of a placeholder.
+            assignment_key=assignment_key,
         )
     except Exception:
         logger.warning(

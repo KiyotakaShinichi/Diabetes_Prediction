@@ -20,6 +20,7 @@ import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -174,7 +175,9 @@ def prepare_training_data(
 
 # -------------------------------------------------- threshold + evaluation
 
-def select_threshold(model, splits: training.TrainingSplits) -> tuple[float, dict]:
+def select_threshold(
+    model: training.ProbabilityEstimator, splits: training.TrainingSplits
+) -> tuple[float, dict]:
     """Youden's J on the VALIDATION set, so the test set stays untouched.
 
     Model-agnostic: it needs only predict_proba, which is why the logistic and
@@ -192,7 +195,9 @@ def select_threshold(model, splits: training.TrainingSplits) -> tuple[float, dic
 
 
 def evaluate_on_test(
-    model, splits: training.TrainingSplits, threshold: float
+    model: training.ProbabilityEstimator,
+    splits: training.TrainingSplits,
+    threshold: float,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Score the held-out test set and print the standard report."""
     print("\n🔍 Evaluating on held-out TEST set...")
@@ -220,7 +225,7 @@ def evaluate_on_test(
 # --------------------------------------------------------- calibration
 
 def calibrate_estimator(
-    estimator,
+    estimator: Any,
     splits: training.TrainingSplits,
     threshold: float,
     uncalibrated_test_proba: np.ndarray,

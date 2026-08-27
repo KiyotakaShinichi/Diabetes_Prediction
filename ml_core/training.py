@@ -18,8 +18,10 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -31,6 +33,12 @@ EXPECTED_TARGET_VALUES = frozenset({0, 1})
 
 class DatasetValidationError(ValueError):
     """The training dataset does not satisfy the served feature contract."""
+
+
+class ProbabilityEstimator(Protocol):
+    """Minimal estimator surface required by the shared scoring helpers."""
+
+    def predict_proba(self, X: pd.DataFrame) -> npt.ArrayLike: ...
 
 
 def validate_training_dataset(
@@ -160,13 +168,13 @@ def split_training_data(
     )
 
 
-def positive_class_proba(model, X: pd.DataFrame) -> np.ndarray:
+def positive_class_proba(model: ProbabilityEstimator, X: pd.DataFrame) -> np.ndarray:
     """Probability of the positive class, as a plain 1-D array."""
     return np.asarray(model.predict_proba(X))[:, 1]
 
 
 def evaluate_at_threshold(
-    y_true, y_proba: np.ndarray, threshold: float
+    y_true: npt.ArrayLike, y_proba: np.ndarray, threshold: float
 ) -> tuple[np.ndarray, dict]:
     """Apply a decision threshold and evaluate. Returns (predictions, metrics)."""
     y_proba = np.asarray(y_proba)

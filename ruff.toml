@@ -1,11 +1,11 @@
 # Lint contract for CI.
 #
 # SCOPE IS DELIBERATELY INCREMENTAL. This repository carries a large body of
-# unmaintained training experiments (bernouli_nb.py, qsvm.py, neko.py, tuning.py,
-# logreg+clustering.py and ~15 more) that have never been linted. Enforcing any
-# rule set across all of them would produce hundreds of findings unrelated to the
-# code that is actually served, so `include` below names the governed files
-# explicitly and `ruff check .` checks only those.
+# archival training experiments (bernouli_nb.py, qsvm.py, neko.py, tuning.py,
+# logreg+clustering.py and ~15 more) that predate the maintained pipelines.
+# Enforcing the current rule set across them would rewrite historical studies,
+# so `include` names the maintained boundary explicitly. The archival boundary
+# and per-script status are documented in experiments/README.md.
 #
 # Files outside `include` are UNLINTED, not blessed. Bringing one into scope is a
 # separate, per-file task.
@@ -19,6 +19,8 @@ include = [
     "admin_auth.py",
     "create_admin_user.py",
     "experiment_config.py",
+    "logisticregression_only.py",
+    "boostedtrees_ab.py",
     "conftest.py",
     "ml_core/**/*.py",
     "ui/**/*.py",

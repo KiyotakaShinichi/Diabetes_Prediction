@@ -358,6 +358,13 @@ def render_model_details(result: dict, attestation: dict) -> None:
             f"- **Your estimate:** {formatting.percent(result['probability'], 1)}"
         )
 
+        if result.get("request_id"):
+            st.markdown(
+                "- **Reference for this estimate:** "
+                f"`{result['request_id']}` - quote it if you report a problem, so "
+                "the service log for this request can be found."
+            )
+
         if attestation:
             st.markdown(
                 f"- **Artifact integrity:** {len(attestation.get('artifacts', []))} "

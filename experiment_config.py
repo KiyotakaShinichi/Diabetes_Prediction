@@ -101,8 +101,9 @@ def parse_args(
 
 def result_path(args: argparse.Namespace, filename: str) -> Path:
     """Return ``args.results_dir / filename``, creating the directory."""
-    args.results_dir.mkdir(parents=True, exist_ok=True)
-    return args.results_dir / filename
+    results_dir = Path(args.results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    return results_dir / filename
 
 
 def require_direct_execution(module_name: str, script_name: str) -> None:

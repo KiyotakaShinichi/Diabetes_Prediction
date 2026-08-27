@@ -179,7 +179,7 @@ def test_empty_analytics_says_so_rather_than_erroring():
     app = signed_in_app()
 
     assert not app.exception, app.exception
-    assert "No inference logs yet" in all_text(app)
+    assert "No inference records match these filters" in all_text(app)
 
 
 def test_populated_analytics_reports_the_seeded_volume(isolated_admin_environment):
@@ -188,7 +188,7 @@ def test_populated_analytics_reports_the_seeded_volume(isolated_admin_environmen
     app = signed_in_app()
 
     assert not app.exception, app.exception
-    totals = [metric for metric in app.metric if metric.label == "Total Inferences"]
+    totals = [metric for metric in app.metric if metric.label == "Total inferences"]
     assert totals and totals[0].value == "6"
 
 
@@ -241,24 +241,38 @@ def test_the_drift_tab_renders_the_variant_b_baseline():
     assert "Training Distribution (baseline):" in all_text(app)
 
 
-def test_drift_analysis_reports_a_verdict_once_logs_exist(isolated_admin_environment):
+def test_drift_analysis_reports_a_verdict_once_enough_logs_exist(isolated_admin_environment):
+    from ui.admin_components import MIN_DRIFT_SAMPLE
+
+    seed_logs(isolated_admin_environment, count=MIN_DRIFT_SAMPLE + 5)
+
+    app = signed_in_app()
+
+    assert not app.exception, app.exception
+    text = all_text(app).lower()
+    assert "mean shift detected" in text or "no feature mean differs" in text
+
+
+def test_drift_analysis_refuses_to_judge_a_tiny_sample(isolated_admin_environment):
+    """Reporting "no drift" from five rows was the old false comfort."""
     seed_logs(isolated_admin_environment, count=5)
 
     app = signed_in_app()
 
     assert not app.exception, app.exception
-    text = all_text(app)
-    assert "drift detected" in text.lower()
+    assert "not enough recent inferences" in all_text(app).lower()
 
 
 def test_drift_analysis_states_its_verdict_without_relying_on_an_icon(
     isolated_admin_environment,
 ):
     """The verdict must be readable as text, not only as a coloured glyph."""
-    seed_logs(isolated_admin_environment, count=5)
+    from ui.admin_components import MIN_DRIFT_SAMPLE
+
+    seed_logs(isolated_admin_environment, count=MIN_DRIFT_SAMPLE + 5)
 
     app = signed_in_app()
 
     rendered = "\n".join(frame.value.to_string() for frame in app.dataframe)
-    assert "Drift?" in rendered
+    assert "Shifted?" in rendered
     assert "YES" in rendered or "No" in rendered

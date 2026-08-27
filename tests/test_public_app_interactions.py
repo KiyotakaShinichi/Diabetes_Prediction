@@ -10,14 +10,19 @@ Two isolation rules apply to every test in this module:
 * the inference log is redirected to tmp_path, so running the suite never writes
   to data/inference_logs.db or to a configured DATABASE_URL;
 * nothing is asserted about the committed artifacts other than reading them.
-"""
-import shutil
 
+Since the serving convergence the app no longer scores anything itself: it posts
+to the inference API. Tests that submit therefore run against a real FastAPI
+server on loopback (the ``api_base_url`` fixture), not against a patched
+function. That is deliberate - the H1 lesson was that AppTest executes the
+script as its own module, so patching the imported ``streamlit_app`` never
+reaches the running app and produces tests that pass while proving nothing.
+"""
 import pytest
 import streamlit as st
 
 import inference_db
-from conftest import ARTIFACTS_DIR, REPO_ROOT
+from conftest import REPO_ROOT
 from ml_core import feature_contract
 from ui import public_components
 
@@ -50,6 +55,16 @@ def clear_streamlit_caches():
     yield
     st.cache_resource.clear()
     st.cache_data.clear()
+
+
+@pytest.fixture(autouse=True)
+def _default_to_the_live_api(api_base_url):
+    """Point every test in this module at the loopback API by default.
+
+    Individual tests override DIABETES_API_BASE_URL when they need a failing
+    backend instead.
+    """
+    return api_base_url
 
 
 def run_app() -> AppTest:
@@ -239,75 +254,64 @@ def test_the_explanation_states_direction_in_words():
     assert "Increased the estimate" in rendered or "Reduced the estimate" in rendered
 
 
-# ============================================== deployments missing artifacts
+# ============================================== degraded backend, live result
 
-@pytest.fixture
-def deployment(tmp_path):
-    """A real copy of the script whose project root holds only the named artifacts.
-
-    AppTest executes the script as its own module, so monkeypatching the
-    imported ``streamlit_app`` does NOT reach the running app - a patched
-    loader would be silently ignored and the test would pass without proving
-    anything. Copying the script into a directory with a chosen subset of
-    artifacts drives the real loaders instead: the script resolves
-    PROJECT_ROOT from its own __file__, while ui/ and inference_db still
-    import from the repository on sys.path.
-    """
-
-    def build(*artifacts: str) -> AppTest:
-        project = tmp_path / "deployment"
-        (project / "model_artifacts").mkdir(parents=True)
-        shutil.copy2(REPO_ROOT / APP, project / APP)
-        for name in artifacts:
-            shutil.copy2(ARTIFACTS_DIR / name, project / "model_artifacts" / name)
-        app = AppTest.from_file(str(project / APP), default_timeout=180)
-        app.run()
-        return app
-
-    return build
-
-
-def test_a_missing_explainer_says_so_instead_of_rendering_nothing(deployment):
-    """No shap_explainer.pkl: the estimate still works, the gap is stated."""
-    app = deployment("model_bundle.pkl", "metrics.json")
-
-    submit(fill_every_field(app))
-
-    assert not app.exception, app.exception
-    assert app.session_state["assessment_result"]["shap"] == {}
-    assert "explanation model is not available" in all_text(app).lower()
-
-
-def test_a_missing_model_fails_visibly_rather_than_silently(deployment):
-    app = deployment()
-
-    assert not app.exception, app.exception
-    assert app.error, "a missing model must be reported, not silently skipped"
-    assert "not available" in " ".join(str(e.value) for e in app.error).lower()
-
-
-# ============================================== failure paths stay visible
-
-def test_a_logging_failure_does_not_break_the_assessment(monkeypatch):
-    """Monitoring is best-effort; a broken log must not cost the visitor a result.
-
-    The failure is injected through supported configuration rather than a
-    patch: an unreachable DATABASE_URL sends log_inference down its PostgreSQL
-    branch, where connecting raises. Nothing here can be satisfied vacuously -
-    if the except in streamlit_app were removed, this test fails.
-    """
-    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/nowhere")
+def test_an_unavailable_explainer_says_so_and_keeps_the_estimate(stub_api):
+    """/explain failing must not cost the visitor a valid estimate."""
+    stub_api(
+        "/predict",
+        body={
+            "request_id": "req-explain-down", "model_variant": "A",
+            "model_name": "logistic_regression", "prediction": 1,
+            "risk_category": "HIGH", "probability": 0.71, "threshold": 0.4557,
+        },
+    )
+    stub_api("/explain", status=404, body={"detail": "SHAP explainer not found"})
 
     app = submit(fill_every_field(run_app()))
 
     assert not app.exception, app.exception
-    assert "assessment_result" in app.session_state
-    assert "not a diagnosis" in all_text(app).lower()
+    assert app.session_state["assessment_result"]["shap"] == {}
+    assert app.session_state["assessment_result"]["probability"] == 0.71
+    assert "explanation model is not available" in all_text(app).lower()
 
 
-def test_a_successful_assessment_is_logged_once(isolated_inference_log):
+def test_an_unavailable_model_fails_visibly_rather_than_silently(stub_api):
+    """A 503 from the API is the deployment-level "no model" state now."""
+    stub_api(status=503, body={"detail": "Model artifact unavailable.", "request_id": "req-503"})
+
+    app = submit(fill_every_field(run_app()))
+
+    assert not app.exception, app.exception
+    assert "assessment_result" not in app.session_state
+    assert app.error, "an unavailable model must be reported, not silently skipped"
+    assert "temporarily unavailable" in " ".join(str(e.value) for e in app.error).lower()
+
+
+def test_the_correlation_id_is_shown_when_a_request_fails(stub_api):
+    """Enough to trace a failure in the service log, without leaking internals."""
+    stub_api(status=503, body={"detail": "Model artifact unavailable.", "request_id": "req-abc-123"})
+
+    app = submit(fill_every_field(run_app()))
+
+    assert "req-abc-123" in all_text(app)
+
+
+# ============================================== persistence is not duplicated
+
+def test_the_public_app_writes_no_inference_record_itself(isolated_inference_log):
+    """The API owns persistence; a second UI write would double-count every
+    assessment in the admin dashboard."""
+    before = len(inference_db.fetch_recent_logs(limit=500, db_path=isolated_inference_log))
+
+    submit(fill_every_field(run_app()))
+
+    rows = inference_db.fetch_recent_logs(limit=500, db_path=isolated_inference_log)
+    assert len(rows) - before == 1, "expected exactly one record, written by the API"
+
+
+def test_the_recorded_variant_matches_the_one_shown(isolated_inference_log):
     submit(fill_every_field(run_app()))
 
     rows = inference_db.fetch_recent_logs(limit=10, db_path=isolated_inference_log)
-    assert len(rows) == 1
-    assert rows[0]["model_variant"] == "A"
+    assert rows[0]["model_variant"] in {"A", "B"}

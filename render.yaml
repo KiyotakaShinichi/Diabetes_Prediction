@@ -24,6 +24,17 @@ services:
     healthCheckPath: /health
 
   # 2. Public Streamlit frontend (patient risk assessment)
+  #
+  # The public app performs no inference of its own: it posts to diabetes-api
+  # and renders the response. DIABETES_API_BASE_URL is therefore required, not
+  # optional - without it the client falls back to loopback, which on Render
+  # points at the Streamlit container itself and can never reach the API.
+  #
+  # fromService/hostport resolves to "diabetes-api:PORT" on Render's private
+  # network, with no scheme, and ui/api_client.py normalises that authority to
+  # http://. Using a service reference rather than a literal hostname keeps the
+  # wiring correct across Blueprint redeploys and contains no environment
+  # -specific URL.
   - type: web
     name: diabetes-app
     runtime: python
@@ -33,6 +44,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.16"
+      - key: DIABETES_API_BASE_URL
+        fromService:
+          name: diabetes-api
+          type: web
+          property: hostport
 
   # 3. Admin dashboard (login-protected monitoring)
   - type: web
