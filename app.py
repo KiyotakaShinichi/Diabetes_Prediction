@@ -330,6 +330,11 @@ def predict(
             prediction=prediction,
             threshold=threshold,
             payload=payload_dict,
+            # The value A/B bucketing was computed from. Only its digest is
+            # stored, and it identifies an experiment assignment rather than a
+            # person - the public UI sends a random per-session value and the
+            # default here is the literal "anonymous".
+            assignment_key=user_id,
         )
     except Exception:
         logger.warning(
