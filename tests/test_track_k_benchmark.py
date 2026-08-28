@@ -9,6 +9,7 @@ research root, never touches model_artifacts/ or the production attestation, and
 records that fact in every manifest.
 """
 import ast
+import dataclasses
 import hashlib
 import json
 
@@ -21,6 +22,10 @@ from research.track_k import artifacts, benchmark, protocol
 pytest.importorskip("torch", reason="PyTorch is a Track K research dependency")
 
 RESEARCH_PACKAGE = REPO_ROOT / "research" / "track_k"
+
+#: The recompute tests assert on point estimates and on integrity, never on
+#: interval width, so they prove the same thing at a fraction of the cost.
+RESAMPLES = 50
 
 
 def _hash_tree(directory) -> dict[str, str]:
@@ -461,11 +466,144 @@ def test_a_full_run_trains_on_the_searched_configuration(tmp_path, monkeypatch):
         family="mlp", trials=7, best_params=chosen, best_validation_score=0.5
     )
     monkeypatch.setattr(challengers, "search_mlp", lambda *a, **k: recorded)
-    monkeypatch.setattr(challengers, "FINAL_MAX_EPOCHS", 1)
+    profile = dataclasses.replace(protocol.CPU_CONSTRAINED_PROFILE, final_max_epochs=1)
 
     splits = split_module.build_split(split_module.load_dataset())
-    result = benchmark._run_deep("mlp", splits, smoke=False, out_dir=tmp_path)
+    result = benchmark._run_deep(
+        "mlp", splits, profile=profile, smoke=False, out_dir=tmp_path
+    )
 
     assert result.record.config == chosen
     assert result.record.search["trials"] == 7
     assert result.record.training["smoke"] is False
+    assert result.record.training["profile"] == profile.name
+    assert result.record.resources["search_and_fit_seconds"] > 0
+
+
+# ============================== recomputing a finished run without retraining
+
+def test_recomputing_a_run_reproduces_it_exactly(smoke_run):
+    """Same predictions, same code, same numbers - or the pipeline is not sound."""
+    from research.track_k import recompute
+
+    _manifest, run_dir = smoke_run
+
+    record = recompute.recompute(run_dir, reason="reproducibility check", resamples=RESAMPLES)
+
+    assert record["retrained"] is False
+    assert record["differences_from_original"] == {}, "a recomputation drifted"
+
+
+def test_a_recomputation_never_retrains(smoke_run):
+    """The whole point: scoring is cheap, training is not."""
+    import hashlib
+
+    from research.track_k import recompute
+
+    _manifest, run_dir = smoke_run
+    before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in run_dir.iterdir()
+        if path.is_file()
+    }
+
+    recompute.recompute(run_dir, reason="checking nothing is rewritten", resamples=RESAMPLES)
+
+    after = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in run_dir.iterdir()
+        if path.is_file() and path.name in before
+    }
+    assert after == before, "a recomputation modified the run it read"
+
+
+def test_a_recomputation_is_written_beside_the_original_not_over_it(smoke_run):
+    from research.track_k import recompute
+
+    manifest, run_dir = smoke_run
+    original = (run_dir / "run_manifest.json").read_bytes()
+
+    record = recompute.recompute(run_dir, reason="write placement", resamples=RESAMPLES)
+    path = recompute.write(record, run_dir)
+
+    assert path.name == recompute.RECOMPUTED_FILENAME
+    assert (run_dir / "run_manifest.json").read_bytes() == original
+    assert json.loads(path.read_text(encoding="utf-8"))["source_run_id"] == (
+        manifest["track_k_run_id"]
+    )
+
+
+def test_a_recomputation_records_the_run_and_the_reason_it_was_made(smoke_run):
+    from research.track_k import recompute
+
+    manifest, run_dir = smoke_run
+
+    record = recompute.recompute(run_dir, reason="because the metric was wrong", resamples=RESAMPLES)
+
+    assert record["source_run_id"] == manifest["track_k_run_id"]
+    assert record["reason"] == "because the metric was wrong"
+    assert record["source"]["combined_sha256"], "the code version must be recorded"
+
+
+def test_a_recomputation_refuses_a_tampered_prediction_file(smoke_run):
+    from research.track_k import recompute
+
+    _manifest, run_dir = smoke_run
+    target = run_dir / "mlp_checkpoint.pt"
+    original = target.read_bytes()
+
+    try:
+        target.write_bytes(original + b"tampered")
+        with pytest.raises(recompute.RecomputeError):
+            recompute.recompute(run_dir, reason="should not get this far", resamples=RESAMPLES)
+    finally:
+        target.write_bytes(original)
+
+
+def test_a_recomputation_refuses_a_run_whose_split_has_moved(smoke_run, monkeypatch):
+    """Recomputing over different rows would be a new experiment in disguise."""
+    from research.track_k import recompute
+    from research.track_k import split as split_module
+
+    _manifest, run_dir = smoke_run
+    real = split_module.fingerprint_split
+
+    def drifted(*args, **kwargs):
+        fingerprint = real(*args, **kwargs)
+        return dataclasses.replace(fingerprint, combined_sha256="0" * 64)
+
+    monkeypatch.setattr(recompute.split, "fingerprint_split", drifted)
+
+    with pytest.raises(recompute.RecomputeError, match="combined_sha256"):
+        recompute.recompute(run_dir, reason="should not get this far", resamples=RESAMPLES)
+
+
+def test_a_recomputation_reports_when_nothing_changed(smoke_run):
+    from research.track_k import recompute
+
+    _manifest, run_dir = smoke_run
+
+    text = recompute.summarise(
+        recompute.recompute(run_dir, reason="no-op", resamples=RESAMPLES)
+    )
+
+    assert "No statistic changed" in text
+
+
+def test_the_recompute_cli_writes_a_record(smoke_run, capsys):
+    from research.track_k import recompute
+
+    _manifest, run_dir = smoke_run
+
+    exit_code = recompute.main([str(run_dir), "--reason", "cli smoke"])
+
+    assert exit_code == 0
+    assert "without retraining" in capsys.readouterr().out
+    assert (run_dir / recompute.RECOMPUTED_FILENAME).is_file()
+
+
+def test_a_missing_run_directory_fails_clearly(tmp_path):
+    from research.track_k import recompute
+
+    with pytest.raises(recompute.RecomputeError, match="no run manifest"):
+        recompute.recompute(tmp_path / "not-a-run", reason="nothing here", resamples=RESAMPLES)

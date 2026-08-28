@@ -242,14 +242,28 @@ def compare_all(
 
 
 def default_pairs() -> tuple[tuple[str, str], ...]:
-    """The comparisons the protocol names: each deep model against each classical
-    baseline, plus the two deep models against each other."""
+    """The comparisons the protocol names.
+
+    Each deep model against each classical baseline - the question Track K was
+    opened to answer - plus every deep model against every other, which is what
+    distinguishes "no architecture helps" from "one architecture helps and the
+    others do not". Derived from the family roster rather than listed by hand,
+    so adding a challenger cannot silently omit its comparisons.
+
+    Deep-vs-deep pairs are ordered by the roster, so each unordered pair appears
+    once and the direction of every reported delta is predictable.
+    """
     pairs = [
         (deep, classical)
         for deep in protocol.DEEP_FAMILIES
         for classical in protocol.CLASSICAL_FAMILIES
     ]
-    pairs.append(("ft_transformer", "mlp"))
+    deep = protocol.DEEP_FAMILIES
+    pairs.extend(
+        (deep[later], deep[earlier])
+        for earlier in range(len(deep))
+        for later in range(earlier + 1, len(deep))
+    )
     return tuple(pairs)
 
 

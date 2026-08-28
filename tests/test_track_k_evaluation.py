@@ -275,15 +275,40 @@ def test_pairing_produces_a_tighter_interval_than_independent_resampling(three_m
     assert paired_width < unpaired_width
 
 
-def test_every_prespecified_pair_is_compared():
+def test_every_deep_family_is_compared_against_every_classical_baseline():
+    """Derived from the roster, so adding a challenger cannot omit its comparisons."""
+    pairs = set(comparison.default_pairs())
+
+    for deep in protocol.DEEP_FAMILIES:
+        for classical in protocol.CLASSICAL_FAMILIES:
+            assert (deep, classical) in pairs, f"{deep} is never compared to {classical}"
+
+
+def test_every_pair_of_deep_families_is_compared_exactly_once():
+    """Distinguishes "no architecture helps" from "one does and the others do not"."""
+    pairs = comparison.default_pairs()
+    deep = set(protocol.DEEP_FAMILIES)
+    deep_pairs = [pair for pair in pairs if pair[0] in deep and pair[1] in deep]
+
+    assert len(deep_pairs) == len(deep) * (len(deep) - 1) // 2
+    assert len({frozenset(pair) for pair in deep_pairs}) == len(deep_pairs), (
+        "a deep-vs-deep pair is compared in both directions"
+    )
+
+
+def test_the_comparison_set_has_no_duplicates_and_no_self_comparisons():
     pairs = comparison.default_pairs()
 
-    assert ("mlp", "logistic_regression") in pairs
-    assert ("mlp", "xgboost") in pairs
-    assert ("ft_transformer", "logistic_regression") in pairs
-    assert ("ft_transformer", "xgboost") in pairs
-    assert ("ft_transformer", "mlp") in pairs
-    assert len(pairs) == 5
+    assert len(set(pairs)) == len(pairs)
+    assert all(challenger != baseline for challenger, baseline in pairs)
+
+
+def test_no_classical_baseline_is_compared_against_another():
+    """Track K asks whether deep beats classical, not which classical wins."""
+    pairs = comparison.default_pairs()
+    classical = set(protocol.CLASSICAL_FAMILIES)
+
+    assert not [p for p in pairs if p[0] in classical and p[1] in classical]
 
 
 def test_only_the_three_declared_outcomes_can_be_returned(three_models):

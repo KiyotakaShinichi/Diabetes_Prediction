@@ -286,16 +286,42 @@ def test_the_transformer_does_not_ignore_the_level_tensor(vocabulary, prepared):
     assert not torch.equal(first, second)
 
 
-@pytest.mark.parametrize("family", ["mlp", "ft_transformer"])
+def build_family(family: str, vocabulary, *, tiny: bool = False):
+    """Construct the model a family name actually refers to.
+
+    Written as an exhaustive mapping rather than an if/else chain because the
+    chain it replaces silently built an FT-Transformer for every family that was
+    not the MLP - so adding a third challenger produced a test that passed
+    without ever instantiating the model it was parametrised for.
+    """
+    builders = {
+        "mlp": lambda: models.TabularMLP(
+            len(FEATURES), models.MLPConfig(hidden_dims=(8,) if tiny else (128, 64))
+        ),
+        "ft_transformer": lambda: models.FTTransformer(
+            vocabulary,
+            models.FTTransformerConfig(d_token=8, n_blocks=1, n_heads=2)
+            if tiny
+            else models.FTTransformerConfig(),
+        ),
+        "tabular_resnet": lambda: models.TabularResNet(
+            len(FEATURES),
+            models.TabularResNetConfig(d_hidden=8, n_blocks=1)
+            if tiny
+            else models.TabularResNetConfig(),
+        ),
+    }
+    assert set(builders) == set(protocol.DEEP_FAMILIES), (
+        "a deep family has no builder here, so it would go untested"
+    )
+    return builders[family]()
+
+
+@pytest.mark.parametrize("family", protocol.DEEP_FAMILIES)
 def test_parameter_counts_stay_proportionate(family, vocabulary):
     """Ten features and 40k rows do not support a large network."""
-    model = (
-        models.TabularMLP(len(FEATURES), models.MLPConfig())
-        if family == "mlp"
-        else models.FTTransformer(vocabulary, models.FTTransformerConfig())
-    )
+    count = models.count_parameters(build_family(family, vocabulary))
 
-    count = models.count_parameters(model)
     assert 1_000 < count < 200_000, f"{family} has {count:,} parameters"
 
 
@@ -385,13 +411,7 @@ def test_the_loop_runs_on_cpu_without_cuda(prepared):
 
 @pytest.mark.parametrize("family", protocol.DEEP_FAMILIES)
 def test_each_deep_family_trains_end_to_end(family, prepared, vocabulary):
-    model = (
-        models.TabularMLP(len(FEATURES), models.MLPConfig(hidden_dims=(8,)))
-        if family == "mlp"
-        else models.FTTransformer(
-            vocabulary, models.FTTransformerConfig(d_token=8, n_blocks=1, n_heads=2)
-        )
-    )
+    model = build_family(family, vocabulary, tiny=True)
 
     trained, result = train_tiny(model, prepared)
     proba = training.predict_proba(trained, prepared["numeric"], prepared["levels"])

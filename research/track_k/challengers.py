@@ -28,6 +28,7 @@ from research.track_k.deep import training as deep_training
 #: Frozen search budgets, matched in spirit to the classical ones.
 MLP_TRIALS: int = 20
 FT_TRANSFORMER_TRIALS: int = 15
+TABULAR_RESNET_TRIALS: int = 15
 
 #: Epoch ceiling during search. Early stopping usually ends a trial sooner; the
 #: cap keeps one pathological configuration from dominating the budget.
@@ -90,6 +91,19 @@ def _build(family: str, params: dict[str, Any], data: PreparedTensors, seed: int
         return deep_training.build_seeded(
             lambda: models.TabularMLP(n_features, config), seed
         )
+    if family == "tabular_resnet":
+        config_res = models.TabularResNetConfig(
+            d_hidden=params.get("d_hidden", 64),
+            d_expansion=params.get("d_expansion", 2.0),
+            n_blocks=params.get("n_blocks", 3),
+            dropout=params.get("dropout", 0.1),
+            residual_dropout=params.get("residual_dropout", 0.0),
+        )
+        return deep_training.build_seeded(
+            lambda: models.TabularResNet(n_features, config_res), seed
+        )
+    if family != "ft_transformer":
+        raise ValueError(f"not a deep challenger: {family!r}")
     config_ft = models.FTTransformerConfig(
         d_token=params.get("d_token", 32),
         n_blocks=params.get("n_blocks", 3),
@@ -136,11 +150,18 @@ def train_challenger(
 #: that keep the transformer at a few tens of thousands of parameters.
 _MLP_WIDTHS: tuple[tuple[int, ...], ...] = ((64,), (128, 64), (256, 128), (128, 64, 32))
 _FT_TOKENS: tuple[int, ...] = (16, 32, 64)
+_RESNET_WIDTHS: tuple[int, ...] = (32, 64, 128)
 
 
 def search_mlp(
-    data: PreparedTensors, *, trials: int = MLP_TRIALS, seed: int
+    data: PreparedTensors,
+    *,
+    trials: int = MLP_TRIALS,
+    seed: int,
+    max_epochs: int | None = None,
 ) -> SearchOutcome:
+    epochs = SEARCH_MAX_EPOCHS if max_epochs is None else max_epochs
+
     def objective(trial: optuna.Trial) -> float:
         params = {
             "hidden_dims": _MLP_WIDTHS[
@@ -152,7 +173,7 @@ def search_mlp(
             "batch_size": trial.suggest_categorical("batch_size", [256, 512]),
         }
         _model, result = train_challenger(
-            "mlp", params, data, seed=seed, max_epochs=SEARCH_MAX_EPOCHS
+            "mlp", params, data, seed=seed, max_epochs=epochs
         )
         return result.best_val_roc_auc
 
@@ -171,8 +192,14 @@ def search_mlp(
 
 
 def search_ft_transformer(
-    data: PreparedTensors, *, trials: int = FT_TRANSFORMER_TRIALS, seed: int
+    data: PreparedTensors,
+    *,
+    trials: int = FT_TRANSFORMER_TRIALS,
+    seed: int,
+    max_epochs: int | None = None,
 ) -> SearchOutcome:
+    epochs = SEARCH_MAX_EPOCHS if max_epochs is None else max_epochs
+
     def objective(trial: optuna.Trial) -> float:
         d_token = _FT_TOKENS[trial.suggest_int("token_choice", 0, len(_FT_TOKENS) - 1)]
         params = {
@@ -187,7 +214,7 @@ def search_ft_transformer(
             "batch_size": 512,
         }
         _model, result = train_challenger(
-            "ft_transformer", params, data, seed=seed, max_epochs=SEARCH_MAX_EPOCHS
+            "ft_transformer", params, data, seed=seed, max_epochs=epochs
         )
         return result.best_val_roc_auc
 
@@ -206,6 +233,68 @@ def search_ft_transformer(
     )
 
 
+def search_tabular_resnet(
+    data: PreparedTensors,
+    *,
+    trials: int = TABULAR_RESNET_TRIALS,
+    seed: int,
+    max_epochs: int | None = None,
+) -> SearchOutcome:
+    """Depth, width and regularisation for the residual tower."""
+    epochs = SEARCH_MAX_EPOCHS if max_epochs is None else max_epochs
+
+    def objective(trial: optuna.Trial) -> float:
+        params = {
+            "d_hidden": _RESNET_WIDTHS[
+                trial.suggest_int("width_choice", 0, len(_RESNET_WIDTHS) - 1)
+            ],
+            "n_blocks": trial.suggest_int("n_blocks", 2, 4),
+            "d_expansion": trial.suggest_categorical("d_expansion", [1.0, 2.0]),
+            "dropout": trial.suggest_float("dropout", 0.0, 0.3),
+            "residual_dropout": trial.suggest_float("residual_dropout", 0.0, 0.2),
+            "learning_rate": trial.suggest_float("learning_rate", 3e-4, 3e-3, log=True),
+            "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
+            "batch_size": 512,
+        }
+        _model, result = train_challenger(
+            "tabular_resnet", params, data, seed=seed, max_epochs=epochs
+        )
+        return result.best_val_roc_auc
+
+    study = optuna.create_study(
+        direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed)
+    )
+    study.optimize(objective, n_trials=trials, show_progress_bar=False)
+    best = dict(study.best_params)
+    best["d_hidden"] = _RESNET_WIDTHS[best.pop("width_choice")]
+    best["batch_size"] = 512
+    return SearchOutcome(
+        family="tabular_resnet",
+        trials=trials,
+        best_params=best,
+        best_validation_score=float(study.best_value),
+    )
+
+
+def search(
+    family: str,
+    data: PreparedTensors,
+    *,
+    trials: int,
+    seed: int,
+    max_epochs: int | None = None,
+) -> SearchOutcome:
+    """Search any deep family. One dispatch point, so none can be half-wired."""
+    searchers = {
+        "mlp": search_mlp,
+        "ft_transformer": search_ft_transformer,
+        "tabular_resnet": search_tabular_resnet,
+    }
+    if family not in searchers:
+        raise ValueError(f"not a deep challenger: {family!r}")
+    return searchers[family](data, trials=trials, seed=seed, max_epochs=max_epochs)
+
+
 def search_budget(family: str) -> int:
     """The frozen trial budget for one family."""
     return {
@@ -213,6 +302,7 @@ def search_budget(family: str) -> int:
         "xgboost": 30,
         "mlp": MLP_TRIALS,
         "ft_transformer": FT_TRANSFORMER_TRIALS,
+        "tabular_resnet": TABULAR_RESNET_TRIALS,
     }[family]
 
 

@@ -14,6 +14,7 @@ small pure functions that derive from them.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
@@ -163,13 +164,121 @@ MODEL_FAMILIES: Final[tuple[str, ...]] = (
     "xgboost",
     "mlp",
     "ft_transformer",
+    "tabular_resnet",
 )
 
 #: Classical families, i.e. the baselines a deep challenger must beat.
 CLASSICAL_FAMILIES: Final[tuple[str, ...]] = ("logistic_regression", "xgboost")
 
 #: Deep-learning challengers.
-DEEP_FAMILIES: Final[tuple[str, ...]] = ("mlp", "ft_transformer")
+DEEP_FAMILIES: Final[tuple[str, ...]] = ("mlp", "ft_transformer", "tabular_resnet")
+
+#: ------------------------------------------------------ training profiles
+#:
+#: A profile fixes how much TRAINING data a run may use. Nothing else about the
+#: protocol changes with it: the same split, the same validation partition, the
+#: same test partition read once, the same metrics, the same bootstrap and the
+#: same promotion policy. That is deliberate - two profiles are comparable
+#: precisely because the training budget is the only thing that differs.
+#:
+#: PROTOCOL_VERSION is NOT bumped by adding a profile. No frozen decision above
+#: changed; a profile is a new experimental arm within the same contract, and a
+#: run records which arm it belongs to.
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingProfile:
+    """How much data, and how much compute, a run is allowed."""
+
+    name: str
+    #: Rows of the train partition a model may fit on. None means all of them.
+    training_rows: int | None
+    #: Search trials per family. Frozen before any test evaluation.
+    trials: Mapping[str, int]
+    #: Epoch ceilings for the deep families.
+    search_max_epochs: int
+    final_max_epochs: int
+    rationale: str
+
+
+#: The original arm: the full 40,125-row train partition and the larger search.
+#: One run of this exists and is preserved as historical evidence; it is not
+#: repeated, because repeating it costs ninety minutes of CPU to reproduce
+#: predictions that are already on disk.
+FULL_REFERENCE_PROFILE: Final[TrainingProfile] = TrainingProfile(
+    name="full_reference",
+    training_rows=None,
+    trials={
+        "logistic_regression": 20,
+        "xgboost": 30,
+        "mlp": 20,
+        "ft_transformer": 15,
+        "tabular_resnet": 15,
+    },
+    search_max_epochs=30,
+    final_max_epochs=80,
+    rationale=(
+        "The unconstrained arm. Every family sees the whole train partition. "
+        "Expensive on CPU and therefore run once, not iterated on."
+    ),
+)
+
+#: The working arm. A CPU-only development machine cannot sustain repeated
+#: full-dataset deep-learning search, so the training budget is capped and made
+#: identical for every family. Inference stays cheap, so these models are still
+#: judged on the full 13,376-row test partition - a small training budget is a
+#: constraint on fitting, not a reason to accept weaker uncertainty estimates.
+#: Measured before these budgets were chosen, on the 5,000-row subset, one CPU:
+#: logistic regression 0.1s per fit, XGBoost 2.2s per fit, MLP 3.3s per epoch,
+#: tabular ResNet 2.6s per epoch, FT-Transformer 25.0s per epoch. The
+#: FT-Transformer is roughly eight times the cost of the other two networks per
+#: epoch, which is why it gets fewer trials rather than a longer wall clock: an
+#: equal-trials budget would have made it the only model anyone waited for.
+#:
+#: Trial counts are therefore uneven BY COMPUTE, not by favour. Every family
+#: still trains on the same 5,000 rows, selects on the same validation
+#: partition and is judged on the same test partition.
+CPU_CONSTRAINED_PROFILE: Final[TrainingProfile] = TrainingProfile(
+    name="cpu_constrained",
+    training_rows=5000,
+    trials={
+        "logistic_regression": 8,
+        "xgboost": 8,
+        "mlp": 6,
+        "ft_transformer": 4,
+        "tabular_resnet": 6,
+    },
+    search_max_epochs=10,
+    final_max_epochs=30,
+    rationale=(
+        "Sized from measured per-epoch cost on the 5,000-row subset so the whole "
+        "benchmark completes in well under an hour on one CPU. Budgets were fixed "
+        "before any test evaluation and are not raised because a model is losing."
+    ),
+)
+
+TRAINING_PROFILES: Final[Mapping[str, TrainingProfile]] = {
+    FULL_REFERENCE_PROFILE.name: FULL_REFERENCE_PROFILE,
+    CPU_CONSTRAINED_PROFILE.name: CPU_CONSTRAINED_PROFILE,
+}
+
+
+def training_profile(name: str) -> TrainingProfile:
+    if name not in TRAINING_PROFILES:
+        raise ValueError(f"unknown training profile: {name!r}")
+    return TRAINING_PROFILES[name]
+
+
+#: ---------------------------------------------------- sample efficiency
+#:
+#: Nested training subsets, so a change in score between two sizes is caused by
+#: having more data rather than by having different data. Drawn from train only
+#: and stratified; see research/track_k/subsets.py.
+SAMPLE_EFFICIENCY_SIZES: Final[tuple[int, ...]] = (500, 1000, 2500, 5000)
+
+#: Separate from SPLIT_SEED so that changing which rows a subset contains can
+#: never be confused with changing the split itself.
+SUBSET_SEED: Final[int] = 20260829
 
 
 def model_seed(family: str, *, base: int = SPLIT_SEED) -> int:

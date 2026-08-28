@@ -43,6 +43,7 @@ from research.track_k import (
     evaluation,
     protocol,
     split,
+    subsets,
 )
 
 #: Rows timed for the single-row latency figure. Enough to make a median stable
@@ -95,18 +96,47 @@ def _timed_latency(predict: Any, frame: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _training_cost(
+    *, seconds: float, rows: int, trials: int, profile: protocol.TrainingProfile
+) -> dict[str, Any]:
+    """Compute spent producing one final model, recorded as first-class evidence.
+
+    ``search_and_fit_seconds`` covers the hyperparameter search AND the final
+    fit, because that is what a practitioner actually pays to obtain the model.
+    One machine, one process, wall clock: precise enough to compare families,
+    not precise enough to quote as a benchmark of any of them.
+    """
+    return {
+        "search_and_fit_seconds": round(seconds, 3),
+        "training_rows": rows,
+        "search_trials": trials,
+        "profile": profile.name,
+        "device": "cpu",
+        "timing_note": (
+            "wall clock on one CPU machine, search plus final fit, comparative only"
+        ),
+    }
+
+
 def _run_classical(
-    family: str, splits: core_training.TrainingSplits, *, smoke: bool, out_dir: Path
+    family: str,
+    splits: core_training.TrainingSplits,
+    *,
+    profile: protocol.TrainingProfile,
+    smoke: bool,
+    out_dir: Path,
 ) -> FamilyResult:
     seed = protocol.model_seed(family)
-    trials = 2 if smoke else challengers.search_budget(family)
+    trials = 2 if smoke else profile.trials[family]
 
+    fit_started = time.perf_counter()
     search = (
         baselines.search_logistic(splits, trials=trials, seed=seed)
         if family == "logistic_regression"
         else baselines.search_xgboost(splits, trials=trials, seed=seed)
     )
     model = baselines.fit_final(family, search.best_params, splits, seed)
+    fit_seconds = time.perf_counter() - fit_started
 
     val_proba = baselines.predict_proba(model, splits.X_val)
     threshold = calibration.select_threshold(splits.y_val.to_numpy(), val_proba)
@@ -133,6 +163,11 @@ def _run_classical(
         lambda frame: calibrator(baselines.predict_proba(model, frame)), splits.X_test
     )
     resources["artifact_bytes"] = int(model_path.stat().st_size)
+    resources.update(
+        _training_cost(
+            seconds=fit_seconds, rows=len(splits.X_train), trials=trials, profile=profile
+        )
+    )
 
     relative, hashes = artifacts.inventory({"model": model_path}, out_dir)
     return FamilyResult(
@@ -145,7 +180,12 @@ def _run_classical(
             calibration=cal_outcome.as_dict(),
             threshold=threshold,
             parameter_count=None,
-            training={"fitted_on": "train", "smoke": smoke},
+            training={
+                "fitted_on": "train",
+                "smoke": smoke,
+                "profile": profile.name,
+                "training_rows": len(splits.X_train),
+            },
             artifact_paths=relative,
             artifact_hashes=hashes,
             resources=resources,
@@ -160,38 +200,52 @@ def _run_classical(
     )
 
 
+#: Tiny per-family configurations for the smoke path. Small enough to train in
+#: seconds, real enough to exercise every layer the full run uses.
+SMOKE_PARAMS: dict[str, dict[str, Any]] = {
+    "mlp": {"hidden_dims": [16], "batch_size": 512},
+    "ft_transformer": {"d_token": 8, "n_blocks": 1, "n_heads": 2, "batch_size": 512},
+    "tabular_resnet": {"d_hidden": 16, "n_blocks": 1, "batch_size": 512},
+}
+
+
 def _run_deep(
-    family: str, splits: core_training.TrainingSplits, *, smoke: bool, out_dir: Path
+    family: str,
+    splits: core_training.TrainingSplits,
+    *,
+    profile: protocol.TrainingProfile,
+    smoke: bool,
+    out_dir: Path,
 ) -> FamilyResult:
     import torch
 
     seed = protocol.model_seed(family)
     data = challengers.prepare(splits)
 
+    fit_started = time.perf_counter()
     if smoke:
-        params = (
-            {"hidden_dims": [16], "batch_size": 512}
-            if family == "mlp"
-            else {"d_token": 8, "n_blocks": 1, "n_heads": 2, "batch_size": 512}
-        )
+        params = SMOKE_PARAMS[family]
         search = baselines.SearchOutcome(
             family=family, trials=0, best_params=params, best_validation_score=float("nan")
         )
         epochs = 2
+        trials = 0
     else:
-        search = (
-            challengers.search_mlp(data, trials=challengers.MLP_TRIALS, seed=seed)
-            if family == "mlp"
-            else challengers.search_ft_transformer(
-                data, trials=challengers.FT_TRANSFORMER_TRIALS, seed=seed
-            )
+        trials = profile.trials[family]
+        search = challengers.search(
+            family,
+            data,
+            trials=trials,
+            seed=seed,
+            max_epochs=profile.search_max_epochs,
         )
         params = search.best_params
-        epochs = challengers.FINAL_MAX_EPOCHS
+        epochs = profile.final_max_epochs
 
     model, training_result = challengers.train_challenger(
         family, params, data, seed=seed, max_epochs=epochs
     )
+    fit_seconds = time.perf_counter() - fit_started
 
     val_proba = challengers.predict_proba(model, data, splits.X_val)
     threshold = calibration.select_threshold(splits.y_val.to_numpy(), val_proba)
@@ -222,6 +276,12 @@ def _run_deep(
         splits.X_test,
     )
     resources["artifact_bytes"] = int(checkpoint_path.stat().st_size)
+    resources.update(
+        _training_cost(
+            seconds=fit_seconds, rows=len(splits.X_train), trials=trials, profile=profile
+        )
+    )
+    resources["parameter_count"] = challengers.parameter_count(model)
 
     relative, hashes = artifacts.inventory(
         {"checkpoint": checkpoint_path, "learning_curve": curve_path}, out_dir
@@ -239,6 +299,8 @@ def _run_deep(
             training={
                 "fitted_on": "train",
                 "smoke": smoke,
+                "profile": profile.name,
+                "training_rows": len(splits.X_train),
                 **{k: v for k, v in training_result.as_dict().items() if k != "history"},
                 "preprocessing": data.standardiser.as_dict(),
             },
@@ -307,10 +369,23 @@ def error_analysis(
     }
 
 
-def run(*, smoke: bool = False, output_root: Path | None = None) -> dict[str, Any]:
-    """Execute the benchmark and return the manifest it wrote."""
+def run(
+    *,
+    smoke: bool = False,
+    profile: str = protocol.FULL_REFERENCE_PROFILE.name,
+    output_root: Path | None = None,
+) -> dict[str, Any]:
+    """Execute the benchmark and return the manifest it wrote.
+
+    ``profile`` selects the training budget. Everything else - the split, the
+    validation partition, the single read of the test partition, the metrics,
+    the bootstrap and the promotion policy - is identical across profiles, which
+    is what makes two arms comparable on training budget alone.
+    """
+    training = protocol.training_profile(profile)
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
-    run_id = f"{'smoke' if smoke else 'full'}-{uuid.uuid4().hex[:12]}"
+    prefix = "smoke" if smoke else training.name
+    run_id = f"{prefix}-{uuid.uuid4().hex[:12]}"
     root = Path(output_root) if output_root is not None else artifacts.RESEARCH_ROOT
     out_dir = root / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -324,10 +399,28 @@ def run(*, smoke: bool = False, output_root: Path | None = None) -> dict[str, An
         raise split.SplitIntegrityError("; ".join(drift))
     split.write_split_manifest(splits, out_dir / "split_manifest.json")
 
+    # A constrained profile narrows TRAIN and nothing else. Validation still
+    # selects on every row it always did, and the test partition is untouched,
+    # so the only difference from the reference arm is how much data the models
+    # were allowed to fit on.
+    subset_manifest: dict[str, Any] | None = None
+    if training.training_rows is not None:
+        subset_manifest = subsets.build_subset_manifest(splits)
+        ladder = subsets.load_verified_subsets(splits, subset_manifest)
+        if training.training_rows not in ladder:
+            raise ValueError(
+                f"profile {training.name!r} wants {training.training_rows} training "
+                f"rows, which is not one of {sorted(ladder)}"
+            )
+        splits = subsets.take(splits, ladder[training.training_rows])
+        core_training.write_json_atomic(subset_manifest, out_dir / "subset_manifest.json")
+
     results: list[FamilyResult] = []
     for family in protocol.MODEL_FAMILIES:
         runner = _run_deep if protocol.is_deep(family) else _run_classical
-        results.append(runner(family, splits, smoke=smoke, out_dir=out_dir))
+        results.append(
+            runner(family, splits, profile=training, smoke=smoke, out_dir=out_dir)
+        )
 
     predictions = {result.family: result.test_proba for result in results}
     y_test = splits.y_test.to_numpy()
@@ -412,6 +505,17 @@ def run(*, smoke: bool = False, output_root: Path | None = None) -> dict[str, An
         root=out_dir,
     )
     manifest["smoke"] = smoke
+    manifest["training_profile"] = {
+        "name": training.name,
+        "training_rows": len(splits.X_train),
+        "requested_training_rows": training.training_rows,
+        "trials": dict(training.trials),
+        "search_max_epochs": training.search_max_epochs,
+        "final_max_epochs": training.final_max_epochs,
+        "rationale": training.rationale,
+    }
+    if subset_manifest is not None:
+        manifest["training_subset"] = subset_manifest
     if smoke:
         manifest["warning"] = (
             "SMOKE RUN - tiny configurations and 50 bootstrap resamples. "
@@ -430,8 +534,16 @@ def summarise(manifest: dict[str, Any], run_dir: Path) -> str:
     ]
     if manifest.get("smoke"):
         lines.append("*** SMOKE RUN - not research results ***")
+    profile = manifest.get("training_profile")
+    if profile:
+        lines.append(
+            f"profile {profile['name']}  training rows {profile['training_rows']:,}"
+        )
     lines.append("")
-    header = f"{'family':<20}{'roc_auc':>10}{'pr_auc':>10}{'recall':>9}{'brier':>9}{'ece':>9}{'ms/row':>9}"
+    header = (
+        f"{'family':<20}{'roc_auc':>10}{'pr_auc':>10}{'recall':>9}{'brier':>9}"
+        f"{'ece':>9}{'ms/row':>9}{'fit s':>9}"
+    )
     lines.append(header)
     lines.append("-" * len(header))
     for family, record in manifest["models"].items():
@@ -442,6 +554,7 @@ def summarise(manifest: dict[str, Any], run_dir: Path) -> str:
             f"{metrics['recall']:>9.4f}{metrics['brier_score']:>9.5f}"
             f"{metrics['ece']:>9.5f}"
             f"{record['resources']['single_row_median_ms']:>9.3f}"
+            f"{record['resources'].get('search_and_fit_seconds', float('nan')):>9.1f}"
         )
     lines.append("")
     lines.append(f"baseline for promotion: {manifest['promotion']['baseline']}")
@@ -470,6 +583,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Tiny deterministic run that proves the pipeline, in seconds. Not research results.",
     )
     parser.add_argument(
+        "--profile",
+        choices=sorted(protocol.TRAINING_PROFILES),
+        default=protocol.FULL_REFERENCE_PROFILE.name,
+        help="Training budget. cpu_constrained fits a fixed 5,000-row subset.",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=None,
@@ -477,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    manifest = run(smoke=args.smoke, output_root=args.output_root)
+    manifest = run(smoke=args.smoke, profile=args.profile, output_root=args.output_root)
     root = Path(args.output_root) if args.output_root else artifacts.RESEARCH_ROOT
     print(summarise(manifest, root / manifest["track_k_run_id"]))
     return 0

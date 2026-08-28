@@ -1,4 +1,4 @@
-"""The two deep challengers: an MLP and an FT-Transformer.
+"""The three deep challengers: an MLP, an FT-Transformer and a residual tower.
 
 Both are written here rather than pulled from a tabular-DL library, so the
 architecture under test is one this repository owns and can explain. Both take
@@ -72,6 +72,43 @@ class FTTransformerConfig:
             "ffn_dropout": self.ffn_dropout,
             "residual_dropout": self.residual_dropout,
             "ffn_factor": self.ffn_factor,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TabularResNetConfig:
+    """Residual challenger, in the shape Gorishniy et al. use as a tabular baseline.
+
+    The question it answers is narrow and worth answering: the plain MLP
+    plateaus within one epoch, and there are two possible reasons. Either the
+    features are exhausted, or a shallow feed-forward stack is the wrong shape
+    for what remains. A residual tower is the standard way to give a tabular
+    network real depth without the optimisation problems depth normally brings,
+    so if depth is the missing ingredient this is the model that should find it.
+
+    Deliberately NOT a fourth flavour of the same idea: it differs from the MLP
+    by having skip connections and pre-normalised blocks, and from the
+    FT-Transformer by having no attention and no per-feature tokens.
+    """
+
+    d_hidden: int = 64
+    #: Inner width of each block, as a multiple of d_hidden. The block widens,
+    #: activates, narrows, and adds - the standard bottleneck shape.
+    d_expansion: float = 2.0
+    n_blocks: int = 3
+    dropout: float = 0.1
+    residual_dropout: float = 0.0
+    activation: str = "relu"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "architecture": "tabular_resnet",
+            "d_hidden": self.d_hidden,
+            "d_expansion": self.d_expansion,
+            "n_blocks": self.n_blocks,
+            "dropout": self.dropout,
+            "residual_dropout": self.residual_dropout,
+            "activation": self.activation,
         }
 
 
@@ -268,6 +305,60 @@ class FTTransformer(nn.Module):
             tokens = block(tokens)
         cls = tokens[:, 0, :]
         logits: torch.Tensor = self.head(self.head_norm(cls))
+        return logits.reshape(-1)
+
+
+class ResidualBlock(nn.Module):
+    """Pre-norm bottleneck block: normalise, widen, activate, narrow, add.
+
+    Pre-normalisation rather than post- because it is what makes a residual
+    tower trainable at depth without a warmup schedule, which this study has no
+    budget to tune.
+    """
+
+    def __init__(self, d_hidden: int, config: TabularResNetConfig) -> None:
+        super().__init__()
+        d_inner = max(1, round(d_hidden * config.d_expansion))
+        self.norm = nn.BatchNorm1d(d_hidden)
+        self.widen = nn.Linear(d_hidden, d_inner)
+        self.activation = _activation(config.activation)
+        self.dropout = nn.Dropout(config.dropout)
+        self.narrow = nn.Linear(d_inner, d_hidden)
+        self.residual_dropout = nn.Dropout(config.residual_dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.norm(x)
+        residual = self.dropout(self.activation(self.widen(residual)))
+        residual = self.residual_dropout(self.narrow(residual))
+        summed: torch.Tensor = x + residual
+        return summed
+
+
+class TabularResNet(nn.Module):
+    """A residual tower over the standardised feature vector.
+
+    Like the MLP it consumes ``numeric`` and ignores ``levels``, so the only
+    difference between the two is the shape of the network. That is the point:
+    holding the input representation fixed makes the comparison a comparison of
+    architecture rather than of preprocessing.
+    """
+
+    def __init__(self, n_features: int, config: TabularResNetConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.project = nn.Linear(n_features, config.d_hidden)
+        self.blocks = nn.ModuleList(
+            ResidualBlock(config.d_hidden, config) for _ in range(config.n_blocks)
+        )
+        self.head_norm = nn.BatchNorm1d(config.d_hidden)
+        self.head = nn.Linear(config.d_hidden, 1)
+
+    def forward(self, numeric: torch.Tensor, levels: torch.Tensor) -> torch.Tensor:
+        del levels  # ordinal codes are treated as numeric; see TabularMLP
+        x = self.project(numeric)
+        for block in self.blocks:
+            x = block(x)
+        logits: torch.Tensor = self.head(self.head_norm(x))
         return logits.reshape(-1)
 
 
