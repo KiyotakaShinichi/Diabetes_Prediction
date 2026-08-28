@@ -607,3 +607,74 @@ def test_a_missing_run_directory_fails_clearly(tmp_path):
 
     with pytest.raises(recompute.RecomputeError, match="no run manifest"):
         recompute.recompute(tmp_path / "not-a-run", reason="nothing here", resamples=RESAMPLES)
+
+
+def test_a_recomputation_reports_each_statistic_that_moved():
+    """The path that actually mattered: naming what changed, and by how much."""
+    from research.track_k import recompute
+
+    record = {
+        "source_run_id": "full-abc123",
+        "reason": "average precision mishandled tied scores",
+        "differences_from_original": {
+            "logistic_regression": {
+                "bootstrap.pr_auc.point": {"original": 0.79134, "recomputed": 0.78442}
+            }
+        },
+    }
+
+    text = recompute.summarise(record)
+
+    assert "logistic_regression" in text
+    assert "bootstrap.pr_auc.point" in text
+    assert "-0.00692" in text, "the size of the correction must be stated"
+
+
+def test_a_recomputation_reports_non_numeric_changes_without_a_delta():
+    from research.track_k import recompute
+
+    record = {
+        "source_run_id": "full-abc123",
+        "reason": "checking the formatter",
+        "differences_from_original": {
+            "mlp": {"calibration": {"original": "isotonic", "recomputed": "none"}}
+        },
+    }
+
+    text = recompute.summarise(record)
+
+    assert "n/a" in text, "a non-numeric change must not be given a fabricated delta"
+
+
+def test_a_run_missing_its_saved_predictions_is_refused(smoke_run, tmp_path):
+    """Recomputation depends on the predictions; their absence is not recoverable."""
+    import shutil
+
+    from research.track_k import recompute
+
+    _manifest, run_dir = smoke_run
+    copied = tmp_path / "copy"
+    shutil.copytree(run_dir, copied)
+    (copied / "mlp_test_proba.npy").unlink()
+
+    with pytest.raises(recompute.RecomputeError, match="no saved test predictions"):
+        recompute.load_predictions(copied, recompute.load_run(copied))
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        (1.0, 1.0, True),
+        (1.0, 1.0 + 1e-15, True),
+        (1.0, 1.1, False),
+        (None, None, True),
+        (None, 1.0, False),
+        ("isotonic", "isotonic", True),
+        ("isotonic", "sigmoid", False),
+    ],
+)
+def test_comparison_of_recorded_values_handles_every_kind(left, right, expected):
+    """Manifest values are numbers, strings and nulls; all three must compare."""
+    from research.track_k import recompute
+
+    assert recompute._close(left, right) is expected

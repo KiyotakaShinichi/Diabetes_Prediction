@@ -141,7 +141,9 @@ jobs:
         # so it can neither dilute that 90% floor nor be quietly exempted from
         # having a floor of its own. coverage-research.toml owns both.
         run: |
-          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_split_contract.py tests/test_track_k_deep_models.py tests/test_track_k_evaluation.py tests/test_track_k_baselines.py tests/test_track_k_benchmark.py
+          # Globbed, so a new Track K test module cannot escape measurement by
+          # not being added to a hand-maintained list.
+          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py
           coverage report --rcfile=coverage-research.toml
 
       - name: Deep-learning challenger smoke

@@ -112,6 +112,111 @@ fingerprinted by SHA-256 of the index sets; `load_frozen_split` refuses to
 proceed if the dataset bytes or the derived membership differ from a recorded
 run.
 
+## Training profiles
+
+**Amendment, recorded after the reference run and before the constrained one.**
+The development machine is CPU-only. A full-partition run costs about ninety
+minutes, which is not a sensible unit of iteration, so Track K has two arms.
+
+| | `full_reference` | `cpu_constrained` |
+| --- | --- | --- |
+| Training rows | all 40,125 | a fixed 5,000-row subset |
+| Trials — LR / XGB | 20 / 30 | 8 / 8 |
+| Trials — MLP / FT / ResNet | 20 / 15 / 15 | 6 / 4 / 6 |
+| Search epoch cap | 30 | 10 |
+| Final epoch cap | 80 | 30 |
+
+**A profile fixes the training budget and nothing else.** The split, the
+validation partition, the single read of the test partition, the metrics, the
+bootstrap and the promotion policy are identical in both arms — which is exactly
+what makes them comparable on training budget alone. `PROTOCOL_VERSION` is
+therefore **not** bumped: no frozen decision above changed, and a run records
+which arm produced it.
+
+### Budgets came from measurement
+
+Measured on the 5,000-row subset, one CPU, before the budgets were chosen:
+
+| Family | Cost |
+| --- | --- |
+| Logistic regression | 0.1 s per fit |
+| XGBoost | 2.2 s per fit |
+| Tabular ResNet | 2.6 s per epoch |
+| MLP | 3.3 s per epoch |
+| FT-Transformer | **25.0 s per epoch** |
+
+The FT-Transformer is roughly eight times the per-epoch cost of the other two
+networks. It therefore receives fewer trials rather than a longer wall clock:
+the trial counts are uneven **by compute, not by favour**, and every family
+still trains on the same rows, selects on the same validation partition and is
+judged on the same test partition.
+
+Budgets were fixed before any constrained-arm test evaluation and are not
+raised because a model is losing.
+
+### Training is constrained; evaluation is not
+
+Training is expensive and scoring is cheap, so a model fitted on 5,000 rows is
+still evaluated on all 13,376 test rows. A smaller training budget buys no
+weakening of the uncertainty estimates.
+
+## The training subsets
+
+One subset, drawn once, reused by every model and every re-run. Four properties,
+each load-bearing:
+
+- **Drawn only from train.** Validation still selects and test is still read
+  once. A subset borrowing from either would invalidate the study.
+- **Nested.** 500 ⊂ 1,000 ⊂ 2,500 ⊂ 5,000, so a change between two points is
+  caused by having more data rather than different data.
+- **Stratified.** Each subset preserves the train partition's positive rate;
+  500 rows drawn without stratification can drift several points by chance, and
+  a drifted base rate would move calibration for reasons unrelated to size.
+- **Fingerprinted and fail-closed.** Membership, parent partition and dataset
+  hashes are recorded, and every entry point refuses to proceed if they no
+  longer match.
+
+Seed 20260829, deliberately distinct from the split seed so that changing which
+rows a subset holds can never be mistaken for changing the split.
+
+## The third challenger
+
+Both original networks reach within 0.002 of their final validation ROC-AUC in a
+single epoch. That has two possible explanations — the features are exhausted,
+or a shallow feed-forward stack is the wrong shape for what remains — and a
+**residual tower** (`tabular_resnet`) is the standard way to give a tabular
+network real depth without the optimisation problems depth usually brings. It is
+included because it discriminates between those two explanations, not to raise
+the model count. It differs from the MLP by having skip connections and
+pre-normalised blocks, and from the FT-Transformer by having no attention and no
+per-feature tokens.
+
+Comparisons are derived from the family roster rather than listed, so adding a
+challenger cannot silently omit its comparisons.
+
+## Sample-efficiency study
+
+Which family extracts the most from the least data. Every family trains a
+**frozen, conventional configuration** — no per-size search, which would confound
+"more data" with "a differently shaped model" — at each rung of the nested
+ladder, and every model is scored on the full test partition.
+
+No calibrator is fitted in this arm. Calibrators are themselves data-hungry, and
+fitting one per size would mix "the model learned more" with "the calibrator had
+more to work with", so the curve is reported on raw probabilities and the
+threshold-free metrics are the ones to read.
+
+## Recomputation without retraining
+
+Every run persists per-row test predictions, so a corrected metric can be
+re-derived from a finished run rather than by retraining it. A recomputation
+never retrains, never rewrites the original manifest, and fails closed if a
+saved artifact no longer matches its hash or the frozen split has moved. It
+records the run it came from and the reason it was made.
+
+This is a correctness tool, not a second look at the test set: it cannot change
+a model, a hyperparameter, a threshold or a calibrator.
+
 ## Anti-overfitting rule
 
 **The test set is evaluated once, after this protocol is committed.**

@@ -334,3 +334,41 @@ def test_a_search_reports_the_budget_it_was_given(splits, quick_search):
 
     assert outcome.trials == 2
     assert outcome.as_dict()["searched_on"] == "train+validation"
+
+
+def test_the_residual_tower_search_returns_a_trainable_configuration(splits, quick_search):
+    data = challengers.prepare(splits)
+
+    outcome = challengers.search_tabular_resnet(data, trials=1, seed=5042)
+
+    assert outcome.family == "tabular_resnet"
+    assert "width_choice" not in outcome.best_params
+    assert outcome.best_params["d_hidden"] in challengers._RESNET_WIDTHS
+    model, _result = challengers.train_challenger(
+        "tabular_resnet", outcome.best_params, data, seed=5042, max_epochs=1
+    )
+    assert challengers.parameter_count(model) > 0
+
+
+@pytest.mark.parametrize("family", ["mlp", "ft_transformer", "tabular_resnet"])
+def test_the_search_dispatcher_reaches_every_deep_family(family, splits, quick_search):
+    """One dispatch point, so a new challenger cannot be half-wired."""
+    data = challengers.prepare(splits)
+
+    outcome = challengers.search(family, data, trials=1, seed=protocol.model_seed(family))
+
+    assert outcome.family == family
+
+
+def test_the_search_dispatcher_refuses_a_classical_family(splits):
+    data = challengers.prepare(splits)
+
+    with pytest.raises(ValueError, match="not a deep challenger"):
+        challengers.search("xgboost", data, trials=1, seed=1)
+
+
+def test_building_a_classical_family_as_a_challenger_is_refused(splits):
+    data = challengers.prepare(splits)
+
+    with pytest.raises(ValueError, match="not a deep challenger"):
+        challengers.train_challenger("logistic_regression", {}, data, seed=1, max_epochs=1)

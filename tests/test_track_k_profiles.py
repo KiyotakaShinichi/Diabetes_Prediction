@@ -316,3 +316,53 @@ def test_an_unknown_profile_is_refused_before_anything_is_trained(tmp_path):
         benchmark.run(smoke=True, profile="wishful", output_root=tmp_path)
 
     assert not list(tmp_path.iterdir()), "a rejected run left artifacts behind"
+
+
+# ============================================ the document and the code agree
+
+def test_the_protocol_document_names_every_profile():
+    """A profile the document does not mention is a budget nobody reviewed."""
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_k_protocol.md").read_text(
+        encoding="utf-8"
+    )
+
+    for name in protocol.TRAINING_PROFILES:
+        assert name in text, f"{name} is declared in code but absent from the protocol"
+
+
+def test_the_document_records_the_constrained_training_size_and_seeds():
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_k_protocol.md").read_text(
+        encoding="utf-8"
+    ).replace(",", "")
+
+    assert str(protocol.CPU_CONSTRAINED_PROFILE.training_rows) in text
+    assert str(protocol.SUBSET_SEED) in text
+    for size in protocol.SAMPLE_EFFICIENCY_SIZES:
+        assert str(size) in text, f"the {size}-row rung is not documented"
+
+
+def test_the_document_records_the_third_challenger():
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_k_protocol.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "tabular_resnet" in text
+    assert "residual" in text.lower()
+
+
+def test_the_document_explains_why_the_budgets_are_uneven():
+    """The uneven trial counts need a stated reason, or they look like favour."""
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_k_protocol.md").read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "by compute, not by favour" in text
+    assert "per epoch" in text

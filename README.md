@@ -404,7 +404,7 @@ The Track K research package is measured **separately**, by its own
 configuration and its own data file:
 
 ```powershell
-coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_split_contract.py tests/test_track_k_deep_models.py tests/test_track_k_evaluation.py tests/test_track_k_baselines.py tests/test_track_k_benchmark.py
+coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py
 coverage report --rcfile=coverage-research.toml
 ```
 
@@ -685,6 +685,51 @@ $env:DATABASE_URL = "postgresql://user:password@host:5432/dbname"
 For deployment architecture and platform notes, see:
 
 - `README_DEPLOY.md`
+
+## Deep Learning Research (Track K)
+
+`research/track_k/` is a research lab that asks one question: do modern deep
+tabular models materially improve diabetes-risk prediction on this dataset over
+strong classical baselines trained under identical conditions?
+
+**It is research-only.** Nothing in it can address `model_artifacts/`, the
+legacy attestation or `provenance/` — every module is parsed and asserted
+against that, and the deployed artifacts are hashed before and after the
+benchmark tests. `/predict` is untouched, and would have stayed untouched had a
+challenger won: Track K decides whether a model has earned promotion
+*consideration*, never deployment.
+
+The protocol — metric, split, search budgets, calibration procedure, bootstrap
+and promotion thresholds — was committed **before** the test partition was read:
+
+- [docs/research/track_k_protocol.md](docs/research/track_k_protocol.md) — the
+  frozen protocol, in prose
+- [docs/research/track_k_results.md](docs/research/track_k_results.md) — what
+  happened
+- `research/track_k/protocol.py` — the same decisions, machine-readable, with a
+  test asserting the two halves agree
+
+```powershell
+# The reference arm: every family on the full training partition. ~90 min, CPU.
+python -m research.track_k.benchmark
+
+# The resource-constrained arm: one fixed 5,000-row training subset.
+python -m research.track_k.benchmark --profile cpu_constrained
+
+# Which family extracts the most from the least data.
+python -m research.track_k.sample_efficiency
+
+# The pipeline in seconds, tiny configurations. NOT research results.
+python -m research.track_k.benchmark --smoke
+```
+
+Runs write to `research_artifacts/`, which is gitignored: a run is reproducible
+from the committed protocol and seeds rather than from committed weights. Each
+records dataset and split fingerprints, seeds, configurations, search records,
+calibration decisions, comparisons, promotion verdicts, environment, git state
+and artifact hashes, and `verify_run_manifest` re-hashes every declared artifact.
+Per-row test predictions are persisted, so a corrected metric can be re-derived
+from a finished run without retraining it.
 
 ## Project History
 
