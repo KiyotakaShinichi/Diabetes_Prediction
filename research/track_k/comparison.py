@@ -77,14 +77,36 @@ class PairedComparison:
 #: Metrics the bootstrap computes per replicate. Deliberately few: each one costs
 #: 2,000 recomputations per model, and the promotion policy reads only these.
 def _pr_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    """Average precision, computed directly to stay fast inside the loop."""
+    """Average precision, computed directly to stay fast inside the loop.
+
+    Tied scores are collapsed before precision and recall are read off, which
+    is not a nicety here. Isotonic calibration is a step function: it maps this
+    test set's 13,376 predictions onto roughly a hundred distinct values, so
+    almost every row is tied with hundreds of others. Walking the sorted array
+    row by row silently assumes an ordering inside each tie group, and because
+    ``argsort`` is stable that assumption is systematically favourable -
+    measured on this run it inflated average precision by +0.007 to +0.009 for
+    every calibrated model, while the one uncalibrated model, whose scores are
+    nearly all distinct, was unaffected. Precision and recall are therefore
+    evaluated once per distinct score, exactly as
+    ``sklearn.metrics.average_precision_score`` defines them; a test asserts the
+    two agree on heavily tied input.
+    """
     if y_true.sum() == 0:
         return float("nan")
     order = np.argsort(-y_score, kind="mergesort")
+    scores = y_score[order]
     labels = y_true[order]
     true_positive = np.cumsum(labels)
-    precision = true_positive / np.arange(1, len(labels) + 1)
-    return float((precision * labels).sum() / labels.sum())
+    seen = np.arange(1, len(labels) + 1)
+
+    # The last index of each run of equal scores: the only points at which a
+    # threshold can actually be placed.
+    boundaries = np.r_[np.nonzero(np.diff(scores))[0], len(scores) - 1]
+    precision = true_positive[boundaries] / seen[boundaries]
+    recall = true_positive[boundaries] / labels.sum()
+    gained = np.diff(recall, prepend=0.0)
+    return float(np.sum(gained * precision))
 
 
 def _brier(y_true: np.ndarray, y_score: np.ndarray) -> float:

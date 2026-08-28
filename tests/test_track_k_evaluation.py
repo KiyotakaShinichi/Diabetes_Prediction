@@ -391,3 +391,60 @@ def test_every_gate_is_reported_even_when_one_fails():
     assert len(reasons) == 4
     assert any("ECE" in reason for reason in reasons)
     assert any("latency" in reason for reason in reasons)
+
+
+# ================================================ metric agreement under ties
+
+def test_bootstrap_pr_auc_matches_sklearn_on_heavily_tied_scores():
+    """The defect this guards is not hypothetical - it shipped in a full run.
+
+    Isotonic calibration is a step function, so it maps a 13,376-row test set
+    onto roughly a hundred distinct probabilities and almost every row ties with
+    hundreds of others. A row-by-row walk of the sorted scores assumes an
+    ordering inside each tie group, and a stable argsort makes that assumption
+    consistently favourable: it inflated average precision by +0.007 to +0.009
+    for every calibrated model in the first full benchmark, while leaving the
+    one uncalibrated model untouched. Both properties are asserted here.
+    """
+    from sklearn.metrics import average_precision_score
+
+    rng = np.random.default_rng(11)
+    truth = rng.random(4000)
+    y_true = (rng.random(4000) < truth).astype(int)
+
+    tied = np.round(truth, 2)          # ~100 distinct values, like isotonic output
+    distinct = truth                    # nearly all unique, like a raw network output
+
+    assert len(np.unique(tied)) < 150, "the tied fixture is not actually tied"
+    assert comparison._pr_auc(y_true, tied) == pytest.approx(
+        average_precision_score(y_true, tied), abs=1e-12
+    )
+    assert comparison._pr_auc(y_true, distinct) == pytest.approx(
+        average_precision_score(y_true, distinct), abs=1e-12
+    )
+
+
+def test_bootstrap_roc_auc_matches_sklearn_on_heavily_tied_scores():
+    """ROC-AUC is the primary metric; ties must not move it either."""
+    from sklearn.metrics import roc_auc_score
+
+    rng = np.random.default_rng(12)
+    truth = rng.random(4000)
+    y_true = (rng.random(4000) < truth).astype(int)
+    tied = np.round(truth, 2)
+
+    assert comparison.roc_auc(y_true, tied) == pytest.approx(
+        roc_auc_score(y_true, tied), abs=1e-12
+    )
+
+
+def test_a_constant_prediction_is_scored_without_crashing():
+    """The degenerate tie: every score identical."""
+    y_true = np.array([0, 1, 1, 0, 1, 0])
+    constant = np.full(6, 0.5)
+
+    from sklearn.metrics import average_precision_score
+
+    assert comparison._pr_auc(y_true, constant) == pytest.approx(
+        average_precision_score(y_true, constant), abs=1e-12
+    )
