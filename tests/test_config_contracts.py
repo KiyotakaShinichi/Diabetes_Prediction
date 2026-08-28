@@ -5,6 +5,7 @@ deployment surface cannot silently drift away from the tested runtime.
 """
 import json
 import re
+import tomllib
 
 import pytest
 import yaml
@@ -166,6 +167,46 @@ def test_ci_runs_a_cpu_only_deep_learning_smoke():
     assert step["env"]["CUDA_VISIBLE_DEVICES"] == ""
     assert "cuda.is_available()" in step["run"], "the gate must assert no GPU is required"
     assert "RUNNER_TEMP" in step["run"], "research output must land outside the repository"
+
+
+
+def test_research_coverage_is_gated_separately_from_the_core_ratchet():
+    """Two scopes, two configs, two floors - and the core floor is untouched.
+
+    Folding research code into the maintained-module measurement would let a
+    well-covered research package mask a regression in ml_core, or force an
+    aspirational floor onto exploratory code. Neither is acceptable, so the
+    gates are independent and both must exist.
+    """
+    steps = {
+        s.get("name"): s.get("run", "")
+        for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+    }
+
+    core = steps["Enforce maintained-module coverage ratchet"]
+    research = steps["Enforce Track K research coverage ratchet"]
+
+    assert core == "coverage report", "the core gate must keep using pyproject.toml"
+    assert "--rcfile=coverage-research.toml" in research
+    assert "coverage report" in research
+
+
+def test_the_two_coverage_scopes_do_not_overlap():
+    """Neither configuration may measure the other's code."""
+    core = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    research = tomllib.loads(
+        (REPO_ROOT / "coverage-research.toml").read_text(encoding="utf-8")
+    )
+
+    core_source = core["tool"]["coverage"]["run"]["source"]
+    research_source = research["run"]["source"]
+
+    assert core_source == ["ml_core", "experiment_config"], "the core scope changed"
+    assert core["tool"]["coverage"]["report"]["fail_under"] == 90, "the core floor changed"
+    assert research_source == ["research"]
+    assert not set(core_source) & set(research_source)
+    assert research["run"]["data_file"] != ".coverage", "the two runs must not share a data file"
+    assert research["report"]["fail_under"] > 0, "a research gate with no floor is not a gate"
 
 
 def test_devcontainer_uses_the_canonical_python_family_and_lock():

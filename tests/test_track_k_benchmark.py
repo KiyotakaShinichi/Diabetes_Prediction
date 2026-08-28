@@ -432,3 +432,40 @@ def test_a_manifest_of_the_wrong_type_is_rejected(tmp_path):
     )
 
     assert any("provenance_type" in problem for problem in problems)
+
+
+# ================================================== the command-line entry
+
+def test_the_cli_runs_a_smoke_benchmark_and_labels_its_output(tmp_path, capsys):
+    exit_code = benchmark.main(["--smoke", "--output-root", str(tmp_path)])
+
+    printed = capsys.readouterr().out
+    assert exit_code == 0
+    assert "SMOKE RUN" in printed
+    assert "baseline for promotion" in printed
+    assert list(tmp_path.glob("smoke-*/run_manifest.json")), "no manifest was written"
+
+
+def test_a_full_run_trains_on_the_searched_configuration(tmp_path, monkeypatch):
+    """The non-smoke path must use the search result, not a fixed default.
+
+    The search itself is budgeted in minutes, so it is replaced here by a known
+    outcome. What is under test is the wiring: that a full run asks for a
+    configuration and then trains the one it was given.
+    """
+    from research.track_k import baselines, challengers
+    from research.track_k import split as split_module
+
+    chosen = {"hidden_dims": [8], "batch_size": 512, "dropout": 0.0}
+    recorded = baselines.SearchOutcome(
+        family="mlp", trials=7, best_params=chosen, best_validation_score=0.5
+    )
+    monkeypatch.setattr(challengers, "search_mlp", lambda *a, **k: recorded)
+    monkeypatch.setattr(challengers, "FINAL_MAX_EPOCHS", 1)
+
+    splits = split_module.build_split(split_module.load_dataset())
+    result = benchmark._run_deep("mlp", splits, smoke=False, out_dir=tmp_path)
+
+    assert result.record.config == chosen
+    assert result.record.search["trials"] == 7
+    assert result.record.training["smoke"] is False

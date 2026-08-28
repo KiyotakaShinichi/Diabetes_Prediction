@@ -390,10 +390,28 @@ python tools/verify_provenance.py
 python tools/build_artifact_attestation.py --check
 ```
 
-`python -m mypy` checks `ml_core/`, `experiment_config.py`, and `tools/` as
-declared in `pyproject.toml`. Coverage uses branch measurement over the same
-stable owned module boundary and enforces a conservative 90% combined ratchet;
-historical experiments are excluded instead of being counted as artificial 0%.
+`python -m mypy` checks the scope declared in `pyproject.toml`: `ml_core/`,
+`research/`, `tools/`, `ui/`, and the runtime modules `app.py`, `admin_app.py`,
+`admin_auth.py`, `experiment_config.py`, `inference_db.py` and
+`streamlit_app.py`. Nothing in that list is excluded, so "typechecked" means the
+served code rather than a convenient subset of it.
+
+Coverage uses branch measurement over the stable owned module boundary and
+enforces a conservative 90% combined ratchet; historical experiments are
+excluded instead of being counted as artificial 0%.
+
+The Track K research package is measured **separately**, by its own
+configuration and its own data file:
+
+```powershell
+coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_split_contract.py tests/test_track_k_deep_models.py tests/test_track_k_evaluation.py tests/test_track_k_baselines.py tests/test_track_k_benchmark.py
+coverage report --rcfile=coverage-research.toml
+```
+
+Two scopes, two floors, both enforced in CI. Research code never enters the
+maintained-module measurement, so it can neither dilute that 90% floor nor be
+quietly exempted from having a floor of its own — its ratchet is 95%, set from a
+measured 97%.
 
 `tests/test_artifact_compatibility.py` additionally proves the committed model
 bundles still load under the locked dependency set without raising
@@ -415,7 +433,7 @@ against the same canonical Python 3.11 and the same committed lockfiles:
 | Job | What it proves |
 | --- | --- |
 | Lint and typecheck | dependency inputs and locks agree, `ruff check .` governs maintained code, and mypy checks the owned stable scope |
-| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% coverage ratchet, a CPU-only deep-learning training smoke, `compileall`, import safety, and a clean tree |
+| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% maintained-module coverage ratchet, the separate 95% Track K research ratchet, a CPU-only deep-learning training smoke, `compileall`, import safety, and a clean tree |
 | Docker build and health smoke | the image builds, reports Python 3.11, answers `/health`, serves a real `/predict`, and logs no serialization-version warning |
 | Dependency vulnerability audit | `pip-audit` over both lockfiles |
 

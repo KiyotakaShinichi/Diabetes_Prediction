@@ -285,3 +285,52 @@ def test_a_calibrator_returns_probabilities(miscalibrated):
 
     assert calibrated.shape == distorted.shape
     assert ((calibrated >= 0) & (calibrated <= 1)).all()
+
+
+# ==================================================== challenger search
+
+@pytest.fixture
+def quick_search(monkeypatch):
+    """Search with a two-epoch ceiling, so one trial costs seconds."""
+    monkeypatch.setattr(challengers, "SEARCH_MAX_EPOCHS", 2)
+
+
+def test_the_mlp_search_returns_a_configuration_the_trainer_accepts(splits, quick_search):
+    """The search must emit params, not Optuna's internal choice indices."""
+    data = challengers.prepare(splits)
+
+    outcome = challengers.search_mlp(data, trials=1, seed=3042)
+
+    assert outcome.family == "mlp"
+    assert "width_choice" not in outcome.best_params, "an index leaked into the config"
+    assert isinstance(outcome.best_params["hidden_dims"], list)
+    model, _result = challengers.train_challenger(
+        "mlp", outcome.best_params, data, seed=3042, max_epochs=1
+    )
+    assert challengers.parameter_count(model) > 0
+
+
+def test_the_ft_transformer_search_returns_a_trainable_configuration(splits, quick_search):
+    data = challengers.prepare(splits)
+
+    outcome = challengers.search_ft_transformer(data, trials=1, seed=4042)
+
+    assert outcome.family == "ft_transformer"
+    assert "token_choice" not in outcome.best_params
+    assert outcome.best_params["d_token"] in challengers._FT_TOKENS
+    assert outcome.best_params["d_token"] % outcome.best_params["n_heads"] == 0, (
+        "attention heads must divide the token width"
+    )
+    model, _result = challengers.train_challenger(
+        "ft_transformer", outcome.best_params, data, seed=4042, max_epochs=1
+    )
+    assert challengers.parameter_count(model) > 0
+
+
+def test_a_search_reports_the_budget_it_was_given(splits, quick_search):
+    data = challengers.prepare(splits)
+
+    outcome = challengers.search_mlp(data, trials=2, seed=3042)
+
+    assert outcome.trials == 2
+    assert outcome.as_dict()["searched_on"] == "train+validation"
