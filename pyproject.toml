@@ -26,7 +26,7 @@ show_error_codes = true
 # These libraries do not publish complete PEP 561 typing metadata. The override
 # is limited to import discovery; errors in this repository remain enabled.
 [[tool.mypy.overrides]]
-module = ["pandas", "sklearn.*", "joblib"]
+module = ["pandas", "sklearn.*", "joblib", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

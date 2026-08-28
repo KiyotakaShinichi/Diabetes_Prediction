@@ -41,26 +41,36 @@ comparison and never overwritten.
 | Missing values | 0 |
 | Duplicate rows | 0 |
 
-### The balance is engineered, and it matters
+### The class balance is a first-class limitation
 
-A 1.002:1 class ratio is not the population prevalence of diabetes. BRFSS
-prevalence is roughly 14%. The row count and the near-exact parity are consistent
-with the published 50/50-resampled BRFSS variant, deduplicated.
+**Directly measured from the committed file:** 66,877 rows, 33,474 negative and
+33,403 positive, a 49.95% positive rate, a class ratio of approximately 1.002:1,
+no missing values and no duplicate rows.
 
-Two consequences follow, and both are limitations of every model in this
-benchmark rather than of any one of them:
+**Inferred, and labelled as inference:** a near-exact 50/50 split is not what an
+unselected screening population produces, so this file is consistent with a
+deliberately balanced or resampled construction rather than a natural sample.
+The repository contains no dataset card, provenance record or source citation
+for `cleaned_data.csv`, so its exact construction is **not established here**.
+This document deliberately states no external prevalence figure, because none is
+evidenced inside this repository; establishing one would require introducing and
+citing a specific authoritative source, which Track K does not do.
 
-1. **Probabilities are calibrated to a 50% base rate, not to the real world.** A
-   model reporting "62%" here means 62% *conditional on this resampled prior*.
-   Applying it to a population with 14% prevalence would substantially
-   overstate absolute risk.
-2. **Calibration metrics measure internal consistency, not real-world
-   correctness.** A perfectly calibrated model on this dataset would still be
-   miscalibrated in deployment.
+**Consequence, which holds regardless of how the file was built.** Every
+probability in this study is conditional on the study base rate of roughly 50%,
+not on any population prevalence. A model reporting "62%" here means 62% under
+this dataset's prior. Two things follow:
 
-This affects the deployed production model identically — it was trained on the
-same file. Track K records the issue; correcting it would require prevalence
-adjustment against a known base rate and is out of scope here.
+1. **Raw probabilities must not be read as population disease probabilities.**
+2. **Calibration metrics measure internal consistency on this dataset**, not
+   real-world correctness. A perfectly calibrated model here could still be
+   badly calibrated against a differently distributed population.
+
+This applies to the classical and the deep models equally, and to the deployed
+production model, which was trained on the same file. Track K records the
+limitation and does NOT attempt to correct probabilities toward a population
+prevalence: that would need a prespecified recalibration study with a sourced
+base rate, which is out of scope here.
 
 ### Features
 

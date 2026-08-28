@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 import numpy as np
 import torch
+from scipy.stats import rankdata
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -190,32 +191,26 @@ def predict_proba(
 
 
 def roc_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
-    """ROC-AUC without importing sklearn into the training loop.
+    """ROC-AUC via the rank-sum identity.
 
-    Degenerate resamples happen during early epochs on tiny smoke datasets; a
-    single-class batch has no defined ROC-AUC, and 0.5 is the honest answer
-    rather than an exception that would abort a run.
+    Ranking is done by scipy.stats.rankdata, whose "average" method resolves
+    ties in C. An earlier version resolved them in a Python while-loop, which
+    was correct but made the 2,000-replicate paired bootstrap take longer than
+    ten minutes: 24,000 metric evaluations over 13,376 rows is hundreds of
+    millions of interpreter steps. The identity below is the same computation
+    at C speed, and the test comparing it against sklearn still passes.
+
+    A single-class partition has no defined ROC-AUC. Degenerate resamples happen
+    on tiny smoke datasets, so 0.5 is returned rather than raising and aborting
+    a run.
     """
     positives = y_true == 1
-    if positives.all() or not positives.any():
-        return 0.5
-    order = np.argsort(y_score, kind="mergesort")
-    ranks = np.empty(len(y_score), dtype=np.float64)
-    ranks[order] = np.arange(1, len(y_score) + 1, dtype=np.float64)
-
-    # Average ranks within ties, so identical scores cannot inflate the metric.
-    sorted_scores = y_score[order]
-    start = 0
-    while start < len(sorted_scores):
-        stop = start + 1
-        while stop < len(sorted_scores) and sorted_scores[stop] == sorted_scores[start]:
-            stop += 1
-        if stop - start > 1:
-            ranks[order[start:stop]] = ranks[order[start:stop]].mean()
-        start = stop
-
     n_pos = int(positives.sum())
     n_neg = len(y_true) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return 0.5
+
+    ranks = rankdata(y_score, method="average")
     rank_sum = float(ranks[positives].sum())
     return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
