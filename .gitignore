@@ -33,3 +33,8 @@ htmlcov/
 
 # Archived experiment outputs (see experiment_config.DEFAULT_RESULTS_DIR)
 experiment_results/
+
+# Track K research outputs. Runs are reproducible from the committed protocol
+# rather than from committed weights, and these must never be confused with the
+# governed artifacts in model_artifacts/.
+research_artifacts/

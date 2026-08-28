@@ -415,7 +415,7 @@ against the same canonical Python 3.11 and the same committed lockfiles:
 | Job | What it proves |
 | --- | --- |
 | Lint and typecheck | dependency inputs and locks agree, `ruff check .` governs maintained code, and mypy checks the owned stable scope |
-| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% coverage ratchet, `compileall`, import safety, and a clean tree |
+| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% coverage ratchet, a CPU-only deep-learning training smoke, `compileall`, import safety, and a clean tree |
 | Docker build and health smoke | the image builds, reports Python 3.11, answers `/health`, serves a real `/predict`, and logs no serialization-version warning |
 | Dependency vulnerability audit | `pip-audit` over both lockfiles |
 

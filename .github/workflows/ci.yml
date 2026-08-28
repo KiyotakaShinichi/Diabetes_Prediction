@@ -133,6 +133,30 @@ jobs:
         # pyproject.toml owns the measured scope and conservative 90% floor.
         run: coverage report
 
+      - name: Deep-learning challenger smoke
+        env:
+          DATABASE_URL: ""
+          # Prove the Track K stack is CPU-only by denying it a device even if
+          # a GPU runner is ever used. The lock pins a +cpu wheel and
+          # tests/test_dependency_contract.py forbids the CUDA packages; this
+          # is the runtime half of the same guarantee.
+          CUDA_VISIBLE_DEVICES: ""
+        # Trains an MLP and an FT-Transformer end to end on the frozen split
+        # with tiny configurations. It proves the research pipeline executes
+        # under the locked runtime; its numbers are NOT research results, and
+        # the manifest it writes says so. Output goes to the runner's temp
+        # directory, outside the repository, so the clean-tree gate below is
+        # measuring the test suite rather than this run.
+        run: |
+          python - <<'PY'
+          import torch
+          assert not torch.cuda.is_available(), "Track K must not require CUDA"
+          assert torch.__version__.endswith("+cpu"), f"unexpected build: {torch.__version__}"
+          print("torch", torch.__version__, "- CPU build, no device")
+          PY
+          python -m research.track_k.benchmark --smoke --output-root "${RUNNER_TEMP}/track_k"
+          test -f "${RUNNER_TEMP}"/track_k/smoke-*/run_manifest.json
+
       - name: Compile and import smoke
         # The Streamlit entrypoints are now import-safe, so they are imported
         # here too: importing them must render no UI, load no model and write no

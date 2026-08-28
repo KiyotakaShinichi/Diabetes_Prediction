@@ -150,6 +150,24 @@ def test_ci_exposes_static_training_and_coverage_gates():
     assert test_steps["Enforce maintained-module coverage ratchet"] == "coverage report"
 
 
+def test_ci_runs_a_cpu_only_deep_learning_smoke():
+    """The Track K stack must be proven to train, on CPU, under the lock.
+
+    Without this the deep-learning code could rot silently: nothing else in
+    CI trains a network, and a research module that no longer runs is worse
+    than one that was never written.
+    """
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Deep-learning challenger smoke"
+    )
+
+    assert "research.track_k.benchmark --smoke" in step["run"]
+    assert step["env"]["CUDA_VISIBLE_DEVICES"] == ""
+    assert "cuda.is_available()" in step["run"], "the gate must assert no GPU is required"
+    assert "RUNNER_TEMP" in step["run"], "research output must land outside the repository"
+
+
 def test_devcontainer_uses_the_canonical_python_family_and_lock():
     raw = DEVCONTAINER.read_text(encoding="utf-8")
     config = json.loads(re.sub(r"^\s*//.*$", "", raw, flags=re.MULTILINE))
