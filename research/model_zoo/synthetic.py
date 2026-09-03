@@ -89,8 +89,12 @@ def make(problem: SyntheticProblem, *, rows: int = 400, seed: int = 0) -> Synthe
         y = np.where(flip, 1 - parity, parity)
         return SyntheticDataset(
             problem, X, pd.Series(y, name="target"), 0.80,
-            "XOR of two binaries with 5% label noise. Unlearnable by a linear "
-            "boundary, trivial for a tree - which is why no ranking is asserted.",
+            "XOR of two binaries with 5% label noise, among eight irrelevant "
+            "features. No linear boundary exists, and neither XOR column has "
+            "marginal information gain, so a single greedy tree splits on the "
+            "distractors instead and also fails. Feature subsampling recovers "
+            "it, which makes this a test of the splitting strategy rather than "
+            "of the hypothesis class.",
         )
 
     if problem is SyntheticProblem.CLASS_IMBALANCE:

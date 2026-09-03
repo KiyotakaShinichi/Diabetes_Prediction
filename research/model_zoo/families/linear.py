@@ -47,13 +47,22 @@ def _adapter(model_id: str, estimator: Any, spec: ModelSpec) -> Any:
 
 # ------------------------------------------------------------ logistic family
 
+# scikit-learn 1.8 deprecated ``penalty=`` in favour of ``l1_ratio``, and will
+# remove it in 1.10: l1_ratio=0 is ridge, 1 is lasso, and anything between is
+# elastic net. The lock pins 1.8.0, so the three models below use the new
+# spelling - it expresses the same three penalties, and it keeps the zoo's runs
+# free of deprecation noise that would otherwise scroll past every result.
+_RIDGE = 0.0
+_LASSO = 1.0
+
+
 def build_logistic_l2(*, spec: ModelSpec, C: float = 1.0, max_iter: int = 2000) -> Any:
     from sklearn.linear_model import LogisticRegression
 
     return _adapter(
         spec.model_id,
         LogisticRegression(
-            penalty="l2", C=C, solver="lbfgs", max_iter=max_iter, random_state=spec.seed
+            l1_ratio=_RIDGE, C=C, solver="lbfgs", max_iter=max_iter, random_state=spec.seed
         ),
         spec,
     )
@@ -67,7 +76,8 @@ def build_logistic_l1(*, spec: ModelSpec, C: float = 1.0, max_iter: int = 2000) 
     return _adapter(
         spec.model_id,
         LogisticRegression(
-            penalty="l1", C=C, solver="liblinear", max_iter=max_iter, random_state=spec.seed
+            l1_ratio=_LASSO, C=C, solver="liblinear", max_iter=max_iter,
+            random_state=spec.seed,
         ),
         spec,
     )
@@ -81,9 +91,8 @@ def build_logistic_elasticnet(
     return _adapter(
         spec.model_id,
         LogisticRegression(
-            penalty="elasticnet",
-            C=C,
             l1_ratio=l1_ratio,
+            C=C,
             solver="saga",
             max_iter=max_iter,
             random_state=spec.seed,
