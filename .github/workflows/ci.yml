@@ -146,6 +146,33 @@ jobs:
           coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py
           coverage report --rcfile=coverage-research.toml
 
+      - name: Model-zoo registry and smoke
+        env:
+          DATABASE_URL: ""
+          CUDA_VISIBLE_DEVICES: ""
+        # Deliberately NOT the full thirty-model benchmark, which is explicit
+        # research execution measured in minutes. What CI gates is that the
+        # registry is coherent and the harness runs end to end: every spec
+        # builds, the capability matrix generates, and a handful of
+        # representative models complete a real 1,000-row fit against the
+        # canonical data. A registry that no longer constructs is a broken
+        # repository; a benchmark that takes twenty minutes is not a push gate.
+        run: |
+          python - <<'PY'
+          from research.model_zoo.registry import REGISTRY
+          from research.model_zoo.cards import capability_matrix, render_capability_table
+          active = REGISTRY.active()
+          print(f"registry: {len(REGISTRY)} models, {len(active)} active")
+          assert len(REGISTRY) >= 25, "the zoo lost models"
+          matrix = capability_matrix()
+          assert len(matrix) == len(REGISTRY)
+          rendered = render_capability_table(matrix)
+          assert len(rendered.splitlines()) >= len(REGISTRY)
+          print("capability matrix generates for every model")
+          PY
+          python -m research.model_zoo.run --train-rows 1000 --models logistic_l2 random_forest xgboost mlp nearest_centroid --output-root "${RUNNER_TEMP}/model_zoo"
+          test -f "${RUNNER_TEMP}"/model_zoo/zoo-1000-*/run_manifest.json
+
       - name: Deep-learning challenger smoke
         env:
           DATABASE_URL: ""

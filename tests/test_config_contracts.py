@@ -528,3 +528,36 @@ def test_only_the_history_dependent_job_pays_for_full_history():
         assert "fetch-depth" not in (checkout.get("with") or {}), (
             f"{name} does not need history"
         )
+
+
+def test_ci_validates_the_model_zoo_registry_without_running_the_full_benchmark():
+    """The registry must be gated; the thirty-model benchmark must not be.
+
+    A registry that no longer constructs is a broken repository and should fail
+    a push. A benchmark measured in minutes is explicit research execution and
+    would make every push wait for it, which is how gates get disabled.
+    """
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Model-zoo registry and smoke"
+    )
+    run = step["run"]
+
+    assert "from research.model_zoo.registry import REGISTRY" in run
+    assert "capability_matrix" in run, "the generated matrix must be exercised"
+    assert "--models" in run, "CI must run a representative subset, not the whole zoo"
+    assert "RUNNER_TEMP" in run, "research output must land outside the repository"
+    assert step["env"]["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_the_model_zoo_ci_gate_covers_more_than_one_family():
+    """A smoke over one family would not exercise the adapter layer."""
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Model-zoo registry and smoke"
+    )
+
+    named = [m for m in ("logistic_l2", "random_forest", "xgboost", "mlp", "nearest_centroid")
+             if m in step["run"]]
+
+    assert len(named) >= 4, f"only {named} are smoked; cover the adapters broadly"

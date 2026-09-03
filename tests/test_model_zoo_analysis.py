@@ -389,3 +389,54 @@ def test_every_family_has_a_stated_assumption():
         assert cards._assumptions(family, ProbabilityBehavior.NATIVE_PROBABILISTIC)
         assert result["family"] == family.value
         assert manifest["train_rows"] == 1
+
+
+# ================================================ the document and the code
+
+def test_the_protocol_document_names_every_family():
+    """A family the documentation omits is a design nobody reviewed."""
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_l_model_zoo.md").read_text(
+        encoding="utf-8"
+    )
+
+    for family in Family:
+        assert family.value.capitalize() in text or family.value in text.lower(), (
+            f"{family.value} is registered but absent from the protocol document"
+        )
+
+
+def test_the_documents_state_the_evidence_class():
+    """Track L must never be readable as superseding Track K."""
+    from conftest import REPO_ROOT
+
+    docs = REPO_ROOT / "docs" / "research"
+    for name in ("track_l_model_zoo.md", "track_l_results.md"):
+        text = (docs / name).read_text(encoding="utf-8")
+        assert "RESOURCE_CONSTRAINED_EXPLORATORY" in text, name
+        assert "Track K" in text, name
+
+
+def test_the_results_document_records_the_failed_model():
+    """A failure that vanishes from the write-up is a flattering write-up."""
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_l_results.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "sgd_modified_huber" in text
+    assert "skipped" in text.lower()
+    assert "undefined" in text.lower(), "the hard-label model's metrics must be named"
+
+
+def test_the_experimental_control_is_labelled_in_the_documents():
+    from conftest import REPO_ROOT
+
+    text = (REPO_ROOT / "docs" / "research" / "track_l_model_zoo.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "EXPERIMENTAL_INDUCTIVE_BIAS_BASELINE" in text
+    assert "not" in text and "production candidate" in text

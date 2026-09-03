@@ -143,7 +143,8 @@ def _to_unit(scores: np.ndarray) -> np.ndarray:
     values = np.asarray(scores, dtype=float)
     if values.min() >= 0.0 and values.max() <= 1.0:
         return values
-    return 1.0 / (1.0 + np.exp(-values))
+    squashed: np.ndarray = 1.0 / (1.0 + np.exp(-values))
+    return squashed
 
 
 def _run_one(
@@ -267,10 +268,10 @@ def run(
         if model.test_scores is not None
     }
     if scores:
-        np.savez_compressed(out_dir / "test_scores.npz", **scores)
-    np.savez_compressed(
+        _save_arrays(out_dir / "test_scores.npz", scores)
+    _save_arrays(
         out_dir / "test_predictions.npz",
-        **{model_id: model.test_predictions for model_id, model in fitted.items()},
+        {model_id: model.test_predictions for model_id, model in fitted.items()},
     )
 
     manifest = {
@@ -309,6 +310,19 @@ def run(
     # Manifest last, once every artifact it describes exists.
     core_training.write_json_atomic(manifest, out_dir / "run_manifest.json")
     return manifest
+
+
+def _save_arrays(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    """Write a named array bundle.
+
+    Wrapped rather than called inline because numpy types ``savez_compressed``
+    as ``(file, *args, allow_pickle=bool, **kwds)``, so unpacking a dict of
+    arrays into it makes a typechecker match the first keyword against
+    ``allow_pickle``. One annotated call site keeps the rest of the module
+    honest about what it is writing.
+    """
+    save: Any = np.savez_compressed
+    save(path, **arrays)
 
 
 def _counts(results: list[ModelResult]) -> dict[str, int]:

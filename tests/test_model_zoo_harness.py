@@ -413,3 +413,130 @@ def test_the_manifest_is_written_last(tmp_path):
 
     assert (run_dir / "run_manifest.json").is_file()
     assert (run_dir / "test_predictions.npz").is_file()
+
+
+# ================================================ the results table itself
+
+def test_the_summary_table_lists_every_model_including_the_skipped(tmp_path):
+    """A results table that silently omits skips is a flattering table."""
+    from research.model_zoo import run as runner
+
+    manifest = runner.run(
+        train_rows=250,
+        model_ids=["logistic_l2", "nearest_centroid", "lightgbm"],
+        output_root=tmp_path,
+    )
+
+    text = runner.summarise(manifest)
+
+    for model_id in ("logistic_l2", "nearest_centroid", "lightgbm"):
+        assert model_id in text
+    assert "RESOURCE_CONSTRAINED_EXPLORATORY" in text
+    assert "outcomes:" in text
+
+
+def test_the_summary_prints_a_dash_where_a_metric_is_undefined(tmp_path):
+    """Rather than a zero, which would read as a measurement."""
+    from research.model_zoo import run as runner
+
+    manifest = runner.run(
+        train_rows=250, model_ids=["nearest_centroid"], output_root=tmp_path
+    )
+
+    line = next(
+        row for row in runner.summarise(manifest).splitlines()
+        if row.startswith("nearest_centroid")
+    )
+
+    assert " - " in line or line.count("-") >= 2
+    assert "0.00000" not in line, "an undefined metric was printed as zero"
+
+
+def test_the_summary_groups_models_by_family(tmp_path):
+    from research.model_zoo import run as runner
+
+    manifest = runner.run(
+        train_rows=250,
+        model_ids=["random_forest", "logistic_l2", "decision_tree"],
+        output_root=tmp_path,
+    )
+
+    lines = [
+        row.split()[0] for row in runner.summarise(manifest).splitlines()
+        if row.startswith(("random_forest", "logistic_l2", "decision_tree"))
+    ]
+
+    assert lines[0] == "logistic_l2", "linear should precede tree in family order"
+    assert set(lines[1:]) == {"random_forest", "decision_tree"}
+
+
+def test_the_cli_runs_the_zoo_and_prints_the_table(tmp_path, capsys):
+    from research.model_zoo import run as runner
+
+    exit_code = runner.main(
+        ["--train-rows", "250", "--models", "logistic_l2",
+         "--output-root", str(tmp_path)]
+    )
+
+    printed = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Track L model zoo" in printed
+    assert "logistic_l2" in printed
+
+
+def test_a_deep_model_reports_its_parameter_count_in_the_table(tmp_path):
+    """Track K's "bigger did not help" needs a size beside every score."""
+    from research.model_zoo import run as runner
+
+    manifest = runner.run(
+        train_rows=250, model_ids=["mlp"], output_root=tmp_path,
+        overrides={"max_epochs": 2},
+    )
+
+    line = next(
+        row for row in runner.summarise(manifest).splitlines() if row.startswith("mlp")
+    )
+    assert "10,113" in line or "," in line
+
+
+def test_scores_are_persisted_only_for_models_that_have_them(tmp_path):
+    """A hard-label model contributes predictions but no ranking scores."""
+    import numpy as np
+
+    from research.model_zoo import run as runner
+
+    manifest = runner.run(
+        train_rows=250,
+        model_ids=["logistic_l2", "nearest_centroid"],
+        output_root=tmp_path,
+    )
+    run_dir = tmp_path / manifest["run_id"]
+
+    predictions = dict(np.load(run_dir / "test_predictions.npz"))
+    scores = dict(np.load(run_dir / "test_scores.npz"))
+
+    assert set(predictions) == {"logistic_l2", "nearest_centroid"}
+    assert set(scores) == {"logistic_l2"}
+
+
+def test_the_zoo_writes_nothing_outside_its_own_output_root(tmp_path):
+    """The production boundary, asserted rather than assumed."""
+    import hashlib
+    from pathlib import Path
+
+    from conftest import REPO_ROOT
+    from research.model_zoo import run as runner
+
+    def snapshot() -> dict[str, str]:
+        return {
+            path.as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for directory in ("model_artifacts", "provenance")
+            for path in sorted((Path(REPO_ROOT) / directory).rglob("*"))
+            if path.is_file()
+        }
+
+    before = snapshot()
+    runner.run(train_rows=250, model_ids=["logistic_l2"], output_root=tmp_path)
+
+    assert snapshot() == before, "a zoo run modified a protected artifact"
+    assert before, "no protected artifacts were found to protect"

@@ -15,6 +15,27 @@ held-out evaluation, never as live accuracy.
 
 ## Unreleased
 
+### Resource-constrained tabular model zoo — 2026-09-04
+
+Thirty-one algorithms from six families behind one declared contract, trained
+on a deterministic 1,000-row subset of the training partition and evaluated on
+the same held-out rows as Track K. Capability is declared per model and
+asserted against the built model, so the benchmark carries no per-model special
+cases and a spec cannot overclaim; a model with no ranking score reports its
+threshold-free metrics as undefined rather than computing them from hard
+labels. Failures, skips and resource limits stay in the results table with
+reasons attached.
+
+The zoo reuses rather than reimplements: Track K's three networks are imported,
+its subset machinery selects the training rows, and its evaluation and
+threshold code scores every model. Seven new deep architectures each encode a
+different structural hypothesis, including a neural additive model that cannot
+represent feature interactions at all.
+
+Exploratory by construction and labelled as such. Production serving, the
+committed artifacts and Track K's evidence are untouched. (`034e058`,
+`f651f4c`)
+
 ### Deep-learning challenger lab — 2026-08-28
 
 Track K asks whether modern deep tabular models improve diabetes-risk

@@ -731,6 +731,42 @@ and artifact hashes, and `verify_run_manifest` re-hashes every declared artifact
 Per-row test predictions are persisted, so a corrected metric can be re-derived
 from a finished run without retraining it.
 
+## Tabular Model Zoo (Track L)
+
+`research/model_zoo/` is a resource-constrained research platform: thirty-one
+algorithms from six families behind one contract, trained on a deterministic
+1,000-row subset and evaluated on the same held-out rows as Track K.
+
+**Exploratory by construction.** Every result is stamped
+`RESOURCE_CONSTRAINED_EXPLORATORY`. One thousand training rows is 2.5% of Track
+K's reference arm, configurations are frozen defaults rather than tuned, and no
+model here is a promotion candidate — for any model Track K tested, Track K's
+numbers are the stronger evidence.
+
+- [docs/research/track_l_model_zoo.md](docs/research/track_l_model_zoo.md) — the
+  contract, the taxonomy, and how to add a model
+- [docs/research/track_l_results.md](docs/research/track_l_results.md) — what
+  thirty-one algorithms actually did
+
+```powershell
+# The whole zoo. Minutes, CPU only.
+python -m research.model_zoo.run --train-rows 1000
+
+# A subset, for iteration.
+python -m research.model_zoo.run --train-rows 1000 --models logistic_l2 mlp xgboost
+```
+
+Capability is **declared** per model and asserted against the built model by
+`tests/test_model_zoo_registry.py`, so the benchmark needs no per-model special
+cases and a model cannot overclaim. A model with no ranking score has its
+threshold-free metrics reported as undefined rather than computed from its hard
+labels. Models that fail, are skipped or exceed their time budget stay in the
+results table with a reason attached.
+
+LightGBM and CatBoost are registered as optional: absent from both lockfiles,
+detected at import, and recorded as skipped. `pip install lightgbm catboost`
+includes them; the core install stays small either way.
+
 ## Project History
 
 `CHANGELOG.md` records the engineering milestones, newest first, each citing the
