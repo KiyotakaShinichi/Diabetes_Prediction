@@ -22,5 +22,5 @@ xgboost==3.0.4         # artifact-pinned, see above
 psycopg[binary]>=3.2,<4
 requests>=2.32,<3        # public UI -> inference API transport (ui/api_client.py)
 optuna>=4.0,<5
-shap>=0.51,<1
+shap>=0.52.0,<1
 matplotlib>=3.10,<4
