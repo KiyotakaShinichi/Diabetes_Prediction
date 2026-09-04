@@ -17,7 +17,7 @@ joblib>=1.5,<2
 numpy>=2.2,<3          # must stay 2.x: the pickles reference numpy._core
 pandas>=2.3,<3
 scikit-learn==1.8.0    # artifact-pinned, see above
-streamlit>=1.47,<2
+streamlit>=1.62.0,<2
 xgboost==3.0.4         # artifact-pinned, see above
 psycopg[binary]>=3.2,<4
 requests>=2.32,<3        # public UI -> inference API transport (ui/api_client.py)
