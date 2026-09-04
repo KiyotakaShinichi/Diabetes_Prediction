@@ -15,7 +15,7 @@ uvicorn[standard]>=0.35,<1
 pydantic>=2.11,<3
 joblib>=1.5,<2
 numpy>=2.2,<3          # must stay 2.x: the pickles reference numpy._core
-pandas>=2.3,<3
+pandas>=3.0.5,<4
 scikit-learn==1.8.0    # artifact-pinned, see above
 streamlit>=1.47,<2
 xgboost==3.0.4         # artifact-pinned, see above
