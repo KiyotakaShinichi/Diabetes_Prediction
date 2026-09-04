@@ -561,3 +561,50 @@ def test_the_model_zoo_ci_gate_covers_more_than_one_family():
              if m in step["run"]]
 
     assert len(named) >= 4, f"only {named} are smoked; cover the adapters broadly"
+
+
+def test_the_research_coverage_gate_exercises_every_research_package():
+    """Every package under research/ must appear in the coverage command.
+
+    coverage-research.toml measures ``source = ["research"]``, so a package
+    whose tests are absent from the CI command reports 0% and drags the total
+    below the floor. That is exactly how Track L first failed CI: the model zoo
+    was added to the measured scope while the command still ran only Track K's
+    tests, and the local check had been written by hand with both globs - so it
+    passed locally and failed remotely.
+
+    This asserts the two cannot drift apart again.
+    """
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Enforce Track K research coverage ratchet"
+    )
+    command = step["run"]
+
+    packages = [
+        path.name
+        for path in (REPO_ROOT / "research").iterdir()
+        if path.is_dir() and not path.name.startswith("__") and (path / "__init__.py").is_file()
+    ]
+    assert packages, "no research packages found to check"
+
+    for package in packages:
+        assert f"tests/test_{package}_*.py" in command, (
+            f"research/{package}/ is measured by coverage-research.toml but its "
+            f"tests are not in the CI coverage command; it would report 0%"
+        )
+
+
+def test_every_research_package_actually_has_tests():
+    """A glob in CI that matches nothing would satisfy the check above vacuously."""
+    import glob
+
+    packages = [
+        path.name
+        for path in (REPO_ROOT / "research").iterdir()
+        if path.is_dir() and not path.name.startswith("__") and (path / "__init__.py").is_file()
+    ]
+
+    for package in packages:
+        matches = glob.glob(str(REPO_ROOT / "tests" / f"test_{package}_*.py"))
+        assert matches, f"research/{package}/ has no tests/test_{package}_*.py files"
