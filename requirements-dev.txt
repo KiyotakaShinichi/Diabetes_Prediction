@@ -22,7 +22,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 pytest>=8.3,<10
-httpx>=0.28,<1
+httpx>=0.28.1,<1
 ruff>=0.13,<1
 mypy>=2.3,<3
 coverage[toml]>=7.15,<8
