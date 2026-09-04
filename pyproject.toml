@@ -6,6 +6,7 @@ python_version = "3.11"
 # convenient subset of it.
 files = [
     "ml_core",
+    "research",
     "tools",
     "ui",
     "app.py",
@@ -25,7 +26,17 @@ show_error_codes = true
 # These libraries do not publish complete PEP 561 typing metadata. The override
 # is limited to import discovery; errors in this repository remain enabled.
 [[tool.mypy.overrides]]
-module = ["pandas", "sklearn.*", "joblib"]
+module = ["pandas", "sklearn.*", "joblib", "scipy.*"]
+ignore_missing_imports = true
+
+# Track L's optional model-zoo frameworks. These are deliberately absent from
+# both lockfiles: the zoo detects them at runtime, downgrades their registry
+# entries to OPTIONAL, and records them as skipped. Typechecking a repository
+# that is designed to work without them installed therefore cannot resolve the
+# imports, and should not fail on that. The imports are inside the builder
+# functions, so nothing here can execute at import time either.
+[[tool.mypy.overrides]]
+module = ["lightgbm", "catboost"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

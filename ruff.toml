@@ -23,6 +23,7 @@ include = [
     "boostedtrees_ab.py",
     "conftest.py",
     "ml_core/**/*.py",
+    "research/**/*.py",
     "ui/**/*.py",
     "tests/**/*.py",
     "tools/**/*.py",

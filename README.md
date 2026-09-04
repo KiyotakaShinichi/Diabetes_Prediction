@@ -390,10 +390,28 @@ python tools/verify_provenance.py
 python tools/build_artifact_attestation.py --check
 ```
 
-`python -m mypy` checks `ml_core/`, `experiment_config.py`, and `tools/` as
-declared in `pyproject.toml`. Coverage uses branch measurement over the same
-stable owned module boundary and enforces a conservative 90% combined ratchet;
-historical experiments are excluded instead of being counted as artificial 0%.
+`python -m mypy` checks the scope declared in `pyproject.toml`: `ml_core/`,
+`research/`, `tools/`, `ui/`, and the runtime modules `app.py`, `admin_app.py`,
+`admin_auth.py`, `experiment_config.py`, `inference_db.py` and
+`streamlit_app.py`. Nothing in that list is excluded, so "typechecked" means the
+served code rather than a convenient subset of it.
+
+Coverage uses branch measurement over the stable owned module boundary and
+enforces a conservative 90% combined ratchet; historical experiments are
+excluded instead of being counted as artificial 0%.
+
+The Track K research package is measured **separately**, by its own
+configuration and its own data file:
+
+```powershell
+coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py
+coverage report --rcfile=coverage-research.toml
+```
+
+Two scopes, two floors, both enforced in CI. Research code never enters the
+maintained-module measurement, so it can neither dilute that 90% floor nor be
+quietly exempted from having a floor of its own — its ratchet is 95%, set from a
+measured 97%.
 
 `tests/test_artifact_compatibility.py` additionally proves the committed model
 bundles still load under the locked dependency set without raising
@@ -415,7 +433,7 @@ against the same canonical Python 3.11 and the same committed lockfiles:
 | Job | What it proves |
 | --- | --- |
 | Lint and typecheck | dependency inputs and locks agree, `ruff check .` governs maintained code, and mypy checks the owned stable scope |
-| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% coverage ratchet, `compileall`, import safety, and a clean tree |
+| Tests, artifacts, and training smoke | artifact compatibility and attestation, the complete pytest suite partitioned to expose deterministic mini-training, the 90% maintained-module coverage ratchet, the separate 95% Track K research ratchet, a CPU-only deep-learning training smoke, `compileall`, import safety, and a clean tree |
 | Docker build and health smoke | the image builds, reports Python 3.11, answers `/health`, serves a real `/predict`, and logs no serialization-version warning |
 | Dependency vulnerability audit | `pip-audit` over both lockfiles |
 
@@ -667,6 +685,87 @@ $env:DATABASE_URL = "postgresql://user:password@host:5432/dbname"
 For deployment architecture and platform notes, see:
 
 - `README_DEPLOY.md`
+
+## Deep Learning Research (Track K)
+
+`research/track_k/` is a research lab that asks one question: do modern deep
+tabular models materially improve diabetes-risk prediction on this dataset over
+strong classical baselines trained under identical conditions?
+
+**It is research-only.** Nothing in it can address `model_artifacts/`, the
+legacy attestation or `provenance/` — every module is parsed and asserted
+against that, and the deployed artifacts are hashed before and after the
+benchmark tests. `/predict` is untouched, and would have stayed untouched had a
+challenger won: Track K decides whether a model has earned promotion
+*consideration*, never deployment.
+
+The protocol — metric, split, search budgets, calibration procedure, bootstrap
+and promotion thresholds — was committed **before** the test partition was read:
+
+- [docs/research/track_k_protocol.md](docs/research/track_k_protocol.md) — the
+  frozen protocol, in prose
+- [docs/research/track_k_results.md](docs/research/track_k_results.md) — what
+  happened
+- `research/track_k/protocol.py` — the same decisions, machine-readable, with a
+  test asserting the two halves agree
+
+```powershell
+# The reference arm: every family on the full training partition. ~90 min, CPU.
+python -m research.track_k.benchmark
+
+# The resource-constrained arm: one fixed 5,000-row training subset.
+python -m research.track_k.benchmark --profile cpu_constrained
+
+# Which family extracts the most from the least data.
+python -m research.track_k.sample_efficiency
+
+# The pipeline in seconds, tiny configurations. NOT research results.
+python -m research.track_k.benchmark --smoke
+```
+
+Runs write to `research_artifacts/`, which is gitignored: a run is reproducible
+from the committed protocol and seeds rather than from committed weights. Each
+records dataset and split fingerprints, seeds, configurations, search records,
+calibration decisions, comparisons, promotion verdicts, environment, git state
+and artifact hashes, and `verify_run_manifest` re-hashes every declared artifact.
+Per-row test predictions are persisted, so a corrected metric can be re-derived
+from a finished run without retraining it.
+
+## Tabular Model Zoo (Track L)
+
+`research/model_zoo/` is a resource-constrained research platform: thirty-one
+algorithms from six families behind one contract, trained on a deterministic
+1,000-row subset and evaluated on the same held-out rows as Track K.
+
+**Exploratory by construction.** Every result is stamped
+`RESOURCE_CONSTRAINED_EXPLORATORY`. One thousand training rows is 2.5% of Track
+K's reference arm, configurations are frozen defaults rather than tuned, and no
+model here is a promotion candidate — for any model Track K tested, Track K's
+numbers are the stronger evidence.
+
+- [docs/research/track_l_model_zoo.md](docs/research/track_l_model_zoo.md) — the
+  contract, the taxonomy, and how to add a model
+- [docs/research/track_l_results.md](docs/research/track_l_results.md) — what
+  thirty-one algorithms actually did
+
+```powershell
+# The whole zoo. Minutes, CPU only.
+python -m research.model_zoo.run --train-rows 1000
+
+# A subset, for iteration.
+python -m research.model_zoo.run --train-rows 1000 --models logistic_l2 mlp xgboost
+```
+
+Capability is **declared** per model and asserted against the built model by
+`tests/test_model_zoo_registry.py`, so the benchmark needs no per-model special
+cases and a model cannot overclaim. A model with no ranking score has its
+threshold-free metrics reported as undefined rather than computed from its hard
+labels. Models that fail, are skipped or exceed their time budget stay in the
+results table with a reason attached.
+
+LightGBM and CatBoost are registered as optional: absent from both lockfiles,
+detected at import, and recorded as skipped. `pip install lightgbm catboost`
+includes them; the core install stays small either way.
 
 ## Project History
 

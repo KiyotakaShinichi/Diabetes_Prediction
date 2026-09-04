@@ -258,6 +258,14 @@ def stub_api(monkeypatch):
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}"
     monkeypatch.setenv("DIABETES_API_BASE_URL", url)
+    # A generous client timeout, so a starved runner cannot turn a scripted 503
+    # or malformed body into an ApiTimeoutError and fail a test that is asserting
+    # a different error class. This is the observed flake in this family: the
+    # stub answers correctly, but the response lands after the client has given
+    # up, so the assertion sees the wrong message. The dedicated timeout test
+    # overrides this with its own short value, so timeout behaviour is still
+    # covered - by the test that means to cover it.
+    monkeypatch.setenv("DIABETES_API_TIMEOUT_SECONDS", "60")
 
     def configure(path="*", *, status=200, body=None, delay=0.0, raw=None):
         script[path] = {"status": status, "body": body or {}, "delay": delay, "raw": raw}

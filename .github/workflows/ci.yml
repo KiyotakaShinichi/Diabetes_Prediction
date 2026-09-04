@@ -133,6 +133,74 @@ jobs:
         # pyproject.toml owns the measured scope and conservative 90% floor.
         run: coverage report
 
+      - name: Enforce Track K research coverage ratchet
+        env:
+          DATABASE_URL: ""
+        # A SEPARATE gate with a separate config and a separate data file.
+        # Research code never enters the maintained-module measurement above,
+        # so it can neither dilute that 90% floor nor be quietly exempted from
+        # having a floor of its own. coverage-research.toml owns both.
+        run: |
+          # Globbed, so a new Track K test module cannot escape measurement by
+          # not being added to a hand-maintained list.
+          # EVERY research package must be exercised here, not just Track K's.
+          # coverage-research.toml measures source=["research"], so a package
+          # whose tests are missing from this line reports 0% and sinks the
+          # total. tests/test_config_contracts.py asserts the two stay in step.
+          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py
+          coverage report --rcfile=coverage-research.toml
+
+      - name: Model-zoo registry and smoke
+        env:
+          DATABASE_URL: ""
+          CUDA_VISIBLE_DEVICES: ""
+        # Deliberately NOT the full thirty-model benchmark, which is explicit
+        # research execution measured in minutes. What CI gates is that the
+        # registry is coherent and the harness runs end to end: every spec
+        # builds, the capability matrix generates, and a handful of
+        # representative models complete a real 1,000-row fit against the
+        # canonical data. A registry that no longer constructs is a broken
+        # repository; a benchmark that takes twenty minutes is not a push gate.
+        run: |
+          python - <<'PY'
+          from research.model_zoo.registry import REGISTRY
+          from research.model_zoo.cards import capability_matrix, render_capability_table
+          active = REGISTRY.active()
+          print(f"registry: {len(REGISTRY)} models, {len(active)} active")
+          assert len(REGISTRY) >= 25, "the zoo lost models"
+          matrix = capability_matrix()
+          assert len(matrix) == len(REGISTRY)
+          rendered = render_capability_table(matrix)
+          assert len(rendered.splitlines()) >= len(REGISTRY)
+          print("capability matrix generates for every model")
+          PY
+          python -m research.model_zoo.run --train-rows 1000 --models logistic_l2 random_forest xgboost mlp nearest_centroid --output-root "${RUNNER_TEMP}/model_zoo"
+          test -f "${RUNNER_TEMP}"/model_zoo/zoo-1000-*/run_manifest.json
+
+      - name: Deep-learning challenger smoke
+        env:
+          DATABASE_URL: ""
+          # Prove the Track K stack is CPU-only by denying it a device even if
+          # a GPU runner is ever used. The lock pins a +cpu wheel and
+          # tests/test_dependency_contract.py forbids the CUDA packages; this
+          # is the runtime half of the same guarantee.
+          CUDA_VISIBLE_DEVICES: ""
+        # Trains an MLP and an FT-Transformer end to end on the frozen split
+        # with tiny configurations. It proves the research pipeline executes
+        # under the locked runtime; its numbers are NOT research results, and
+        # the manifest it writes says so. Output goes to the runner's temp
+        # directory, outside the repository, so the clean-tree gate below is
+        # measuring the test suite rather than this run.
+        run: |
+          python - <<'PY'
+          import torch
+          assert not torch.cuda.is_available(), "Track K must not require CUDA"
+          assert torch.__version__.endswith("+cpu"), f"unexpected build: {torch.__version__}"
+          print("torch", torch.__version__, "- CPU build, no device")
+          PY
+          python -m research.track_k.benchmark --smoke --output-root "${RUNNER_TEMP}/track_k"
+          test -f "${RUNNER_TEMP}"/track_k/smoke-*/run_manifest.json
+
       - name: Compile and import smoke
         # The Streamlit entrypoints are now import-safe, so they are imported
         # here too: importing them must render no UI, load no model and write no

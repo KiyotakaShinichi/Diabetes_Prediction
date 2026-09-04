@@ -17,11 +17,22 @@ SOURCES = {
 
 
 def _requirements(path: Path) -> list[Requirement]:
+    """Parse a requirements file, ignoring pip's option lines.
+
+    A requirements file may carry options as well as specifiers - ``-r``, ``-c``,
+    ``--index-url``, ``--extra-index-url`` and friends. The development files
+    now use ``--extra-index-url`` so PyTorch resolves from its CPU wheel index
+    rather than PyPI's default build, which on Linux drags in roughly a dozen
+    nvidia-* CUDA packages this project has no use for. Those lines are
+    configuration, not dependencies, so they are skipped rather than fed to a
+    parser that can only read specifiers.
+    """
     parsed: list[Requirement] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.split("#", 1)[0].strip()
-        if line:
-            parsed.append(Requirement(line))
+        if not line or line.startswith("-"):
+            continue
+        parsed.append(Requirement(line))
     return parsed
 
 

@@ -15,6 +15,51 @@ held-out evaluation, never as live accuracy.
 
 ## Unreleased
 
+### Resource-constrained tabular model zoo — 2026-09-04
+
+Thirty-one algorithms from six families behind one declared contract, trained
+on a deterministic 1,000-row subset of the training partition and evaluated on
+the same held-out rows as Track K. Capability is declared per model and
+asserted against the built model, so the benchmark carries no per-model special
+cases and a spec cannot overclaim; a model with no ranking score reports its
+threshold-free metrics as undefined rather than computing them from hard
+labels. Failures, skips and resource limits stay in the results table with
+reasons attached.
+
+The zoo reuses rather than reimplements: Track K's three networks are imported,
+its subset machinery selects the training rows, and its evaluation and
+threshold code scores every model. Seven new deep architectures each encode a
+different structural hypothesis, including a neural additive model that cannot
+represent feature interactions at all.
+
+Exploratory by construction and labelled as such. Production serving, the
+committed artifacts and Track K's evidence are untouched. (`034e058`,
+`f651f4c`)
+
+### Deep-learning challenger lab — 2026-08-28
+
+Track K asks whether modern deep tabular models improve diabetes-risk
+prediction over strong classical baselines, and answers it under one frozen
+protocol committed before any model saw the test partition. Four families —
+logistic regression, XGBoost, an MLP and an FT-Transformer — were trained fresh
+on an identical split, with a residual tower added later as a third challenger.
+The evaluation contract, calibration selection, paired bootstrap, promotion
+policy, research provenance and error analysis are all new, and all live under
+`research/`, which is measured by its own coverage gate rather than the
+maintained-module one.
+
+Nothing about production changed. The research package cannot address
+`model_artifacts/`, and the deployed artifacts are hashed before and after the
+benchmark tests to prove it.
+
+A second, resource-constrained arm trains every family on one deterministic,
+fingerprinted, nested 5,000-row subset drawn from the training partition alone,
+with budgets set from measured per-epoch cost. Runs persist per-row test
+predictions so a corrected metric can be re-derived without retraining — used
+once, when average precision was found to mishandle the tied scores isotonic
+calibration produces. (`15a0921`, `cf96f6b`, `b9b31b0`, `6ef01e6`, `9f10bd7`,
+`9f86d3d`)
+
 ### Buyer readiness and static governance — 2026-08-27
 
 Dependency inputs and deterministic locks are verified against each other by

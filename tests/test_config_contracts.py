@@ -5,6 +5,7 @@ deployment surface cannot silently drift away from the tested runtime.
 """
 import json
 import re
+import tomllib
 
 import pytest
 import yaml
@@ -148,6 +149,64 @@ def test_ci_exposes_static_training_and_coverage_gates():
     assert "tests/test_training_smoke.py" in test_steps["Run deterministic training smoke"]
     assert "--ignore=tests/test_training_smoke.py" in test_steps["Run remaining test suite"]
     assert test_steps["Enforce maintained-module coverage ratchet"] == "coverage report"
+
+
+def test_ci_runs_a_cpu_only_deep_learning_smoke():
+    """The Track K stack must be proven to train, on CPU, under the lock.
+
+    Without this the deep-learning code could rot silently: nothing else in
+    CI trains a network, and a research module that no longer runs is worse
+    than one that was never written.
+    """
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Deep-learning challenger smoke"
+    )
+
+    assert "research.track_k.benchmark --smoke" in step["run"]
+    assert step["env"]["CUDA_VISIBLE_DEVICES"] == ""
+    assert "cuda.is_available()" in step["run"], "the gate must assert no GPU is required"
+    assert "RUNNER_TEMP" in step["run"], "research output must land outside the repository"
+
+
+
+def test_research_coverage_is_gated_separately_from_the_core_ratchet():
+    """Two scopes, two configs, two floors - and the core floor is untouched.
+
+    Folding research code into the maintained-module measurement would let a
+    well-covered research package mask a regression in ml_core, or force an
+    aspirational floor onto exploratory code. Neither is acceptable, so the
+    gates are independent and both must exist.
+    """
+    steps = {
+        s.get("name"): s.get("run", "")
+        for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+    }
+
+    core = steps["Enforce maintained-module coverage ratchet"]
+    research = steps["Enforce Track K research coverage ratchet"]
+
+    assert core == "coverage report", "the core gate must keep using pyproject.toml"
+    assert "--rcfile=coverage-research.toml" in research
+    assert "coverage report" in research
+
+
+def test_the_two_coverage_scopes_do_not_overlap():
+    """Neither configuration may measure the other's code."""
+    core = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    research = tomllib.loads(
+        (REPO_ROOT / "coverage-research.toml").read_text(encoding="utf-8")
+    )
+
+    core_source = core["tool"]["coverage"]["run"]["source"]
+    research_source = research["run"]["source"]
+
+    assert core_source == ["ml_core", "experiment_config"], "the core scope changed"
+    assert core["tool"]["coverage"]["report"]["fail_under"] == 90, "the core floor changed"
+    assert research_source == ["research"]
+    assert not set(core_source) & set(research_source)
+    assert research["run"]["data_file"] != ".coverage", "the two runs must not share a data file"
+    assert research["report"]["fail_under"] > 0, "a research gate with no floor is not a gate"
 
 
 def test_devcontainer_uses_the_canonical_python_family_and_lock():
@@ -469,3 +528,83 @@ def test_only_the_history_dependent_job_pays_for_full_history():
         assert "fetch-depth" not in (checkout.get("with") or {}), (
             f"{name} does not need history"
         )
+
+
+def test_ci_validates_the_model_zoo_registry_without_running_the_full_benchmark():
+    """The registry must be gated; the thirty-model benchmark must not be.
+
+    A registry that no longer constructs is a broken repository and should fail
+    a push. A benchmark measured in minutes is explicit research execution and
+    would make every push wait for it, which is how gates get disabled.
+    """
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Model-zoo registry and smoke"
+    )
+    run = step["run"]
+
+    assert "from research.model_zoo.registry import REGISTRY" in run
+    assert "capability_matrix" in run, "the generated matrix must be exercised"
+    assert "--models" in run, "CI must run a representative subset, not the whole zoo"
+    assert "RUNNER_TEMP" in run, "research output must land outside the repository"
+    assert step["env"]["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_the_model_zoo_ci_gate_covers_more_than_one_family():
+    """A smoke over one family would not exercise the adapter layer."""
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Model-zoo registry and smoke"
+    )
+
+    named = [m for m in ("logistic_l2", "random_forest", "xgboost", "mlp", "nearest_centroid")
+             if m in step["run"]]
+
+    assert len(named) >= 4, f"only {named} are smoked; cover the adapters broadly"
+
+
+def test_the_research_coverage_gate_exercises_every_research_package():
+    """Every package under research/ must appear in the coverage command.
+
+    coverage-research.toml measures ``source = ["research"]``, so a package
+    whose tests are absent from the CI command reports 0% and drags the total
+    below the floor. That is exactly how Track L first failed CI: the model zoo
+    was added to the measured scope while the command still ran only Track K's
+    tests, and the local check had been written by hand with both globs - so it
+    passed locally and failed remotely.
+
+    This asserts the two cannot drift apart again.
+    """
+    step = next(
+        s for s in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+        if s.get("name") == "Enforce Track K research coverage ratchet"
+    )
+    command = step["run"]
+
+    packages = [
+        path.name
+        for path in (REPO_ROOT / "research").iterdir()
+        if path.is_dir() and not path.name.startswith("__") and (path / "__init__.py").is_file()
+    ]
+    assert packages, "no research packages found to check"
+
+    for package in packages:
+        assert f"tests/test_{package}_*.py" in command, (
+            f"research/{package}/ is measured by coverage-research.toml but its "
+            f"tests are not in the CI coverage command; it would report 0%"
+        )
+
+
+def test_every_research_package_actually_has_tests():
+    """A glob in CI that matches nothing would satisfy the check above vacuously."""
+    import glob
+
+    packages = [
+        path.name
+        for path in (REPO_ROOT / "research").iterdir()
+        if path.is_dir() and not path.name.startswith("__") and (path / "__init__.py").is_file()
+    ]
+
+    for package in packages:
+        matches = glob.glob(str(REPO_ROOT / "tests" / f"test_{package}_*.py"))
+        assert matches, f"research/{package}/ has no tests/test_{package}_*.py files"
