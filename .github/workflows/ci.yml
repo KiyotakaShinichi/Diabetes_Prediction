@@ -147,7 +147,7 @@ jobs:
           # coverage-research.toml measures source=["research"], so a package
           # whose tests are missing from this line reports 0% and sinks the
           # total. tests/test_config_contracts.py asserts the two stay in step.
-          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py
+          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py tests/test_xai_*.py
           coverage report --rcfile=coverage-research.toml
 
       - name: Model-zoo registry and smoke
@@ -176,6 +176,57 @@ jobs:
           PY
           python -m research.model_zoo.run --train-rows 1000 --models logistic_l2 random_forest xgboost mlp nearest_centroid --output-root "${RUNNER_TEMP}/model_zoo"
           test -f "${RUNNER_TEMP}"/model_zoo/zoo-1000-*/run_manifest.json
+
+      - name: Explainability capability contract and smoke
+        env:
+          DATABASE_URL: ""
+          CUDA_VISIBLE_DEVICES: ""
+        # Deliberately NOT the full explanation sweep, which is explicit
+        # research execution measured in minutes. What CI gates is that the
+        # capability contract stays coherent - every method's requirement
+        # resolves against every model's profile, and every card still states
+        # its limitations - and that the runner completes end to end on the
+        # canonical data for one model per family and one method per kind.
+        #
+        # The representative slice is chosen to exercise all four outcome
+        # paths: a supported global method, a supported local method, a
+        # capability a model genuinely lacks, and a model with no ranking
+        # score at all.
+        run: |
+          python - <<'PY'
+          from research.model_zoo.contracts import ResearchStatus
+          from research.model_zoo.registry import REGISTRY
+          from research.xai import cards, run as xai_run
+          from research.xai.capabilities import XaiCapability, build_profiles
+          from research.xai.registry import METHODS
+
+          profiles = build_profiles()
+          assert set(profiles) == set(REGISTRY.ids()), "a model has no XAI profile"
+
+          for method in METHODS:
+              assert isinstance(method.required_capability, XaiCapability)
+              assert method.failure_modes, f"{method.method_id} declares no limitation"
+
+          active = [s for s in REGISTRY if s.effective_status() is ResearchStatus.ACTIVE]
+          matrix = xai_run.plan()
+          assert len(matrix) == len(active) * len(METHODS), "the plan lost pairs"
+          assert any(row["supported"] for row in matrix), "nothing is explainable"
+          assert any(not row["supported"] for row in matrix), "every gap vanished"
+          for row in matrix:
+              assert row["supported"] or row["reason"], "an unsupported pair gave no reason"
+
+          counts = cards.coverage_counts()
+          print(f"xai: {len(matrix)} pairs, coverage {counts}")
+          assert counts["permutation_importance"] >= 20, "the cross-family baseline shrank"
+          assert counts["gradient_compatible"] >= 5, "the gradient roster shrank"
+
+          text = cards.render_all()
+          assert cards.SCOPE_NOTE in text
+          assert text.count("**Limitations.**") >= len(active), "a card lost its limitations"
+          print("capability contract coherent; cards render for every model")
+          PY
+          python -m research.xai.run --train-rows 1000 --models logistic_l2 random_forest mlp nearest_centroid --methods coefficients native_importance permutation_importance occlusion integrated_gradients --case-limit 5 --eval-rows 400 --no-interactions --output-dir "${RUNNER_TEMP}/xai"
+          test -f "${RUNNER_TEMP}"/xai/xai-1000-*/run_manifest.json
 
       - name: Deep-learning challenger smoke
         env:
