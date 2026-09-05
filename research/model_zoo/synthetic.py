@@ -53,8 +53,13 @@ class SyntheticDataset:
     description: str
 
 
-def _contract_frame(rows: int, rng: np.random.Generator) -> pd.DataFrame:
-    """Random but contract-valid feature values, in canonical column order."""
+def contract_frame(rows: int, rng: np.random.Generator) -> pd.DataFrame:
+    """Random but contract-valid feature values, in canonical column order.
+
+    Public because Track M's explanation worlds build on the same generator:
+    two modules inventing their own contract-valid frames would eventually
+    disagree about what the contract says.
+    """
     columns = {}
     for spec in feature_contract.FEATURE_SPECS:
         if spec.kind == "continuous":
@@ -69,7 +74,7 @@ def _contract_frame(rows: int, rng: np.random.Generator) -> pd.DataFrame:
 def make(problem: SyntheticProblem, *, rows: int = 400, seed: int = 0) -> SyntheticDataset:
     """Build one synthetic problem deterministically."""
     rng = np.random.default_rng(seed)
-    X = _contract_frame(rows, rng)
+    X = contract_frame(rows, rng)
 
     if problem is SyntheticProblem.LINEARLY_SEPARABLE:
         # A clean linear rule in two standardised features, with a small margin
