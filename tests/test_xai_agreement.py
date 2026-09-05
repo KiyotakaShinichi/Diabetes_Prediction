@@ -249,6 +249,61 @@ def test_between_families_only_pairs_models_from_different_families():
         assert result.left_method == result.right_method
 
 
+def test_local_explanations_are_only_ever_compared_row_for_row():
+    """Two models are compared on the same patient, never on different ones.
+
+    Without the sample_id key, model A's explanation of patient 3 gets compared
+    with model B's explanation of patient 7, and the result reads as a
+    cross-model agreement figure while actually measuring how much two different
+    patients resemble each other. It is not visibly wrong from the outside - the
+    number is well-formed and lands in a plausible range - which is exactly why
+    it is asserted here.
+    """
+    records = [
+        _record("logistic_l2", "linear", "occlusion", _descending(), sample_id=sample)
+        for sample in (0, 1, 2)
+    ] + [
+        _record("random_forest", "tree", "occlusion", _descending(3), sample_id=sample)
+        for sample in (0, 1, 2)
+    ] + [
+        _record("logistic_l2", "linear", "coefficients", _descending()),
+        _record("random_forest", "tree", "native_importance", _descending(1)),
+    ]
+
+    by_id = {r.explanation_id: r for r in records}
+    for grouping in (
+        agreement.within_model(records),
+        agreement.within_family(records),
+        agreement.between_families(records),
+    ):
+        for result in grouping:
+            left, right = by_id[result.left], by_id[result.right]
+            assert left.sample_id == right.sample_id, (
+                f"compared sample {left.sample_id} with sample {right.sample_id}"
+            )
+
+
+def test_pairing_by_subject_also_keeps_the_analysis_affordable():
+    """A correctness fix that happens to be a fortyfold saving.
+
+    Twenty-eight models times forty cases is 1,120 occlusion records. Compared
+    without regard to subject that is 627,000 pairs; compared row for row it is
+    the 40 within-subject sets that actually mean something.
+    """
+    records = [
+        _record(f"m{model}", "linear" if model % 2 else "tree", "occlusion",
+                _descending(model % 10), sample_id=sample)
+        for model in range(6)
+        for sample in range(4)
+    ]
+
+    pairs = agreement.between_families(records)
+
+    # Six models, three of each family, four subjects: 3 x 3 cross-family pairs
+    # per subject rather than every record against every other.
+    assert len(pairs) == 4 * 9
+
+
 def test_a_single_model_produces_no_cross_family_comparisons():
     records = [_record("logistic_l2", "linear", "coefficients", _descending())]
 

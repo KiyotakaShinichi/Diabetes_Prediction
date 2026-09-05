@@ -37,6 +37,19 @@ Give the world a second real driver and top-3 starts working again. So the
 shortlist readings are informative in proportion to how many features genuinely
 carry signal, which is itself worth reporting rather than assuming.
 
+**Local explanations are only ever compared row for row.** Every grouping below
+keys on `sample_id` as well as on model, family or method, so model A's
+explanation of patient 3 is compared with model B's explanation of patient 3 and
+never with its explanation of patient 7. Without that key the comparison reads
+as a cross-model agreement figure while actually measuring how much two
+different patients resemble each other, and it is not obviously wrong from the
+outside - the number is well-formed and lands in a plausible range.
+
+It also decides whether the analysis is affordable. Occlusion over twenty-eight
+models and forty cases is 1,120 records; compared without regard to subject that
+is 627,000 pairs, and compared row for row it is 15,000 - a fortyfold saving
+that happens to fall out of doing the right thing.
+
 Three deliberate restrictions.
 
 **Only ranks are compared, never raw values.** A logistic coefficient, an
@@ -225,15 +238,18 @@ def compare(left: ExplanationRecord, right: ExplanationRecord) -> AgreementResul
 # ================================================================ groupings
 
 def within_model(records: Iterable[ExplanationRecord]) -> list[AgreementResult]:
-    """Every pair of *methods* applied to the same model.
+    """Every pair of *methods* applied to the same model, on the same subject.
 
     Answers "does this model get a consistent story told about it?". A model
     whose methods disagree with each other is not a model whose explanation can
     be quoted without naming the method that produced it.
+
+    Grouped by ``sample_id`` as well as by model, so two methods are compared
+    on the same patient rather than on different ones.
     """
-    grouped: dict[str, list[ExplanationRecord]] = defaultdict(list)
+    grouped: dict[tuple[str, int | None], list[ExplanationRecord]] = defaultdict(list)
     for record in records:
-        grouped[record.model_id].append(record)
+        grouped[(record.model_id, record.sample_id)].append(record)
 
     return [
         compare(left, right)
@@ -249,11 +265,12 @@ def within_family(records: Iterable[ExplanationRecord]) -> list[AgreementResult]
     Holding the method fixed is what makes this measure the models rather than
     the methods. Two random forests explained by permutation importance that
     disagree are telling you something about forests; two different methods
-    disagreeing tells you nothing about them.
+    disagreeing tells you nothing about them. Local records are paired by
+    ``sample_id``, so the comparison is always on one patient at a time.
     """
-    grouped: dict[tuple[str, str], list[ExplanationRecord]] = defaultdict(list)
+    grouped: dict[tuple[str, str, int | None], list[ExplanationRecord]] = defaultdict(list)
     for record in records:
-        grouped[(record.model_family, record.method)].append(record)
+        grouped[(record.model_family, record.method, record.sample_id)].append(record)
 
     return [
         compare(left, right)
@@ -267,11 +284,12 @@ def between_families(records: Iterable[ExplanationRecord]) -> list[AgreementResu
     """Every cross-family pair, holding the method fixed.
 
     The headline question of the track: given that these families predict alike,
-    do they attribute alike?
+    do they attribute alike? Local records are paired by ``sample_id``, so a
+    cross-family figure describes disagreement about the same patients.
     """
-    grouped: dict[str, list[ExplanationRecord]] = defaultdict(list)
+    grouped: dict[tuple[str, int | None], list[ExplanationRecord]] = defaultdict(list)
     for record in records:
-        grouped[record.method].append(record)
+        grouped[(record.method, record.sample_id)].append(record)
 
     return [
         compare(left, right)
