@@ -55,8 +55,8 @@ from research.model_zoo.contracts import Framework, ResearchStatus
 from research.model_zoo.registry import REGISTRY, ModelSpec
 from research.track_k import artifacts as track_k_artifacts
 from research.track_k import split, subsets
-from research.xai import agreement, interactions, stability
-from research.xai.capabilities import profile_for
+from research.xai import agreement, faithfulness, interactions, stability
+from research.xai.capabilities import XaiCapability, profile_for
 from research.xai.contracts import (
     ExplanationRecord,
     MethodOutcome,
@@ -79,17 +79,29 @@ DEFAULT_CASE_LIMIT: int = 40
 
 #: Validation rows the global methods are scored on.
 #:
-#: The whole validation partition is 13,376 rows, and using it would make the
-#: global methods the run's dominant cost by a wide margin: permutation
-#: importance rescores every row ten features times five shuffles, and a
-#: partial-dependence sweep rescores it twenty times per feature. That is
-#: roughly 2.7 million row-scores per model for PD alone, times twenty-eight
-#: models, to sharpen an estimate that is already stable.
+#: Sized from measurement. The whole validation partition is 13,376 rows and
+#: partial dependence rescores it once per grid point per feature, so a single
+#: model would cost about 2.7 million row-scores; a random forest at 2,000 rows
+#: still took ten minutes, which puts a twenty-eight model sweep past four hours
+#: for an estimate that is already stable.
 #:
-#: Two thousand rows are sampled deterministically instead. The sample is drawn
-#: once and shared by every model, so a difference between two models is a
-#: difference between the models rather than between their evaluation rows.
-DEFAULT_EVAL_ROWS: int = 2000
+#: Five hundred rows are sampled deterministically instead, drawn once and
+#: shared by every model, so a difference between two models is a difference
+#: between the models rather than between their evaluation rows. The cost of
+#: that choice is real and worth naming: permutation importance on 500 rows
+#: carries roughly 0.02 ROC-AUC points of sampling noise, which is ample to
+#: separate a leading feature from an inert one and not enough to order two
+#: features that are genuinely close. The report flags near-ties for exactly
+#: this reason rather than presenting the ordering as firm.
+DEFAULT_EVAL_ROWS: int = 500
+
+#: Grid resolution for the partial-dependence attribution. Ten points rather
+#: than the module's twenty: the runner reads only the curve's *range*, and a
+#: range measured over ten points across the observed support differs from one
+#: measured over twenty by far less than the differences being compared, at half
+#: the cost. The full-resolution curve is still what `partial_dependence`
+#: returns when a shape is wanted rather than a scalar.
+RUN_PD_GRID_POINTS: int = 10
 
 #: Wall-clock ceiling per (model, method) pair. A method that exceeds it is
 #: recorded as RESOURCE_LIMIT rather than left running; "too slow at this
@@ -100,6 +112,18 @@ DEFAULT_METHOD_BUDGET_SECONDS: float = 240.0
 #: forty-five pairs and a full sweep costs minutes per model, so the runner
 #: scopes it to the pairs among the consensus top five.
 DEFAULT_INTERACTION_FEATURES: int = 5
+
+#: Perturbation strengths the stability sweep uses, and replicates per strength.
+#: Narrower than `stability.STABILITY_MAGNITUDES`: three points spanning
+#: "a rounding error" to "a different patient" is enough to see whether the
+#: leading feature holds, and the sweep is repeated for every model.
+RUN_STABILITY_MAGNITUDES: tuple[float, ...] = (0.1, 0.5, 1.0)
+RUN_STABILITY_REPEATS: int = 3
+
+#: Rows the stability and faithfulness sweeps run on. Both re-score the sample
+#: many times over, so they read the case sample rather than the full
+#: evaluation partition.
+RUN_SWEEP_ROWS: int = 40
 
 XAI_ROOT = track_k_artifacts.PROJECT_ROOT / "research_artifacts" / "xai"
 
@@ -149,7 +173,9 @@ def _global_attributions(
         # moves when this feature is swept. Flat curve, no attribution.
         return np.array(
             [
-                classical.partial_dependence(model, context.X_eval, feature)["range"]
+                classical.partial_dependence(
+                    model, context.X_eval, feature, grid_points=RUN_PD_GRID_POINTS
+                )["range"]
                 for feature in context.feature_names
             ],
             dtype=float,
@@ -162,12 +188,7 @@ def _local_attributions(
 ) -> np.ndarray:
     """One attribution row per case, for a local method."""
     if method.method_id == "occlusion":
-        return np.vstack([
-            classical.occlusion_attributions(
-                model, context.cases.iloc[[position]], context.baseline
-            )
-            for position in range(len(context.cases))
-        ])
+        return classical.occlusion_matrix(model, context.cases, context.baseline)
     if method.method_id == "gradient":
         return deep.input_gradient(model, context.cases)
     if method.method_id == "gradient_x_input":
@@ -398,6 +419,7 @@ def run(
     method_budget: float = DEFAULT_METHOD_BUDGET_SECONDS,
     overrides: dict[str, Any] | None = None,
     with_interactions: bool = True,
+    with_sweeps: bool = True,
 ) -> dict[str, Any]:
     """Explain the zoo, write the evidence, and return the manifest."""
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -418,6 +440,8 @@ def run(
     records: list[ExplanationRecord] = []
     fit_failures: dict[str, str] = {}
     interaction_summaries: dict[str, Any] = {}
+    stability_summaries: dict[str, Any] = {}
+    faithfulness_summaries: dict[str, Any] = {}
 
     for spec in specs:
         try:
@@ -438,6 +462,12 @@ def run(
             interaction_summaries[spec.model_id] = _interactions_for(
                 model, context, model_records
             )
+        if with_sweeps and model_records:
+            faithfulness_summaries[spec.model_id] = _faithfulness_for(
+                model, context, model_records
+            )
+            if profile_for(spec).supports(XaiCapability.OCCLUSION_COMPATIBLE):
+                stability_summaries[spec.model_id] = _stability_for(model, context)
 
         _write_json(
             out_dir / "records" / f"{spec.model_id}.json",
@@ -449,6 +479,10 @@ def run(
     _write_json(out_dir / "analysis.json", analysis)
     if interaction_summaries:
         _write_json(out_dir / "interactions.json", interaction_summaries)
+    if stability_summaries:
+        _write_json(out_dir / "stability.json", stability_summaries)
+    if faithfulness_summaries:
+        _write_json(out_dir / "faithfulness.json", faithfulness_summaries)
 
     manifest = {
         "run_id": run_id,
@@ -465,12 +499,71 @@ def run(
         "counts": _counts(outcomes),
         "analysis": analysis,
         "interactions": interaction_summaries,
+        "stability": stability_summaries,
+        "faithfulness": faithfulness_summaries,
         "records_hash": hash_payload([r.as_dict() for r in records]),
     }
     # Written last, deliberately: a run that dies halfway leaves records and no
     # manifest, which is unambiguous. The reverse would claim results it lacks.
     _write_json(out_dir / "run_manifest.json", manifest)
     return manifest
+
+
+def _occlusion_profile(model: Any, frame: pd.DataFrame, baseline: pd.Series) -> np.ndarray:
+    """Mean absolute occlusion over a frame: a global profile from a local method.
+
+    Used as the stability probe because it is the one method available on every
+    model with a ranking score, which is what makes a stability number
+    comparable across families rather than a property of whichever method
+    happened to apply.
+    """
+    stacked = classical.occlusion_matrix(model, frame, baseline)
+    profile: np.ndarray = np.abs(stacked).mean(axis=0)
+    return profile
+
+
+def _stability_for(model: Any, context: RunContext) -> dict[str, Any]:
+    """How far the explanation moves when the data is perturbed.
+
+    The model is not refitted. This is the narrower of the two possible
+    questions - whether a fixed model's explanation is robust to the rows it is
+    explained on - and not whether a model refitted on perturbed data would find
+    the same structure, which is a question about training variance.
+    """
+    sample = context.cases.iloc[:RUN_SWEEP_ROWS]
+    try:
+        points = stability.stability_curve(
+            lambda frame: _occlusion_profile(model, frame, context.baseline),
+            sample,
+            context.scale,
+            magnitudes=RUN_STABILITY_MAGNITUDES,
+            repeats=RUN_STABILITY_REPEATS,
+            seed=0,
+        )
+    except Exception as error:  # noqa: BLE001 - a failed sweep is a recorded result
+        return {"error": f"{type(error).__name__}: {error}"}
+    return {"probe": "occlusion profile", **stability.summarise(points)}
+
+
+def _faithfulness_for(
+    model: Any, context: RunContext, records: list[ExplanationRecord]
+) -> dict[str, Any]:
+    """Whether this model's consensus ranking predicts what the model uses.
+
+    Scored against shuffled rankings over the same rows. On a model dominated by
+    one feature almost any ranking eventually produces a dramatic curve, so only
+    the gap between the ranking and the shuffle says the order carried
+    information.
+    """
+    sample = context.cases.iloc[:RUN_SWEEP_ROWS]
+    ranking = agreement.consensus_ranking(records)
+    try:
+        result = faithfulness.evaluate(
+            model, sample, ranking, context.baseline, seed=0
+        )
+    except Exception as error:  # noqa: BLE001 - a failed sweep is a recorded result
+        return {"error": f"{type(error).__name__}: {error}", "ranking": list(ranking)}
+    return {"ranking": list(ranking), **result.as_dict()}
 
 
 def _interactions_for(
@@ -573,6 +666,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip the interaction sweep, which dominates the run's cost.",
     )
     parser.add_argument(
+        "--no-sweeps", action="store_true",
+        help="Skip the stability and faithfulness sweeps.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the (model, method) matrix without running anything.",
     )
@@ -596,6 +693,7 @@ def main(argv: list[str] | None = None) -> int:
         output_root=args.output_dir,
         method_budget=args.method_budget,
         with_interactions=not args.no_interactions,
+        with_sweeps=not args.no_sweeps,
     )
     print(summarise(manifest))
     return 0

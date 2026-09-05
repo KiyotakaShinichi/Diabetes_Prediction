@@ -479,6 +479,31 @@ def test_a_feature_already_at_its_baseline_occludes_to_exactly_zero(dominant, do
     assert deltas[INDEX["BMI"]] == 0.0
 
 
+def test_the_batched_occlusion_is_exactly_the_per_row_one(dominant, dominant_models):
+    """Same arithmetic, forty times faster - and "same" has to be exact.
+
+    A one-row DataFrame carries about 87ms of scikit-learn dispatch overhead on
+    these pipelines, so occluding forty rows one at a time spends almost all of
+    its time outside the model; the stability sweep, which repeats that ten
+    times over, cost six minutes per model before it was batched and costs
+    seven seconds after. A speedup that changed the numbers would be worthless,
+    so the equivalence is asserted rather than assumed.
+    """
+    _, X_train, _, _, _ = dominant
+    baseline = worlds.baseline_row(X_train)
+    frame = X_train.iloc[:12]
+
+    for model_id, model in dominant_models.items():
+        batched = classical.occlusion_matrix(model, frame, baseline)
+        per_row = np.vstack([
+            classical.occlusion_attributions(model, frame.iloc[[i]], baseline)
+            for i in range(len(frame))
+        ])
+
+        assert batched.shape == (12, len(FEATURES))
+        assert np.allclose(batched, per_row, atol=1e-12), f"{model_id} disagreed"
+
+
 def test_occlusion_returns_one_value_per_feature(dominant, dominant_models):
     _, X_train, _, _, _ = dominant
     deltas = classical.occlusion_attributions(
