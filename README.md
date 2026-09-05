@@ -767,6 +767,38 @@ LightGBM and CatBoost are registered as optional: absent from both lockfiles,
 detected at import, and recorded as skipped. `pip install lightgbm catboost`
 includes them; the core install stays small either way.
 
+## Cross-Family Explainability (Track M)
+
+`research/xai/` asks the question Tracks K and L could not: those models agree
+on *predictions* — do they agree on *reasons*? Nine explanation methods run over
+the Track L zoo under one capability contract, and the same four analyses run
+over every result: agreement, stability under perturbation, faithfulness against
+a shuffled control, and two-way interaction strength.
+
+**Association, never causation.** Nothing here supports a claim that a feature
+causes diabetes, that changing one would change a person's risk, or any
+treatment recommendation. `tests/test_xai_language.py` enforces that on the
+generated cards and reports rather than trusting review.
+
+- [docs/research/track_m_xai.md](docs/research/track_m_xai.md) — the protocol,
+  and the seven claims that measurement forced a rewrite of
+
+```powershell
+# See which (model, method) pairs are valid before spending time on them.
+python -m research.xai.run --dry-run
+
+# A subset, for iteration.
+python -m research.xai.run --models logistic_l2 random_forest mlp --case-limit 10
+```
+
+Capability is declared per model and validated against the constructed model. A
+gap in the results table is a property of the model: `nearest_centroid` emits
+hard labels so no perturbation method applies to it, and `ft_transformer` and
+`tab_transformer` reach their discrete features through embedding tables, so an
+input gradient is exactly zero for nine of ten features and they are excluded
+from the gradient methods rather than reported with nine zeros. Every attempted
+pair produces a row with a reason attached, including the ones that fail.
+
 ## Project History
 
 `CHANGELOG.md` records the engineering milestones, newest first, each citing the
