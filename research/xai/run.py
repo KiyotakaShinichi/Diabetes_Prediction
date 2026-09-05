@@ -77,6 +77,20 @@ DEFAULT_TRAIN_ROWS: int = 1000
 #: per row per model - inside a single-CPU budget.
 DEFAULT_CASE_LIMIT: int = 40
 
+#: Validation rows the global methods are scored on.
+#:
+#: The whole validation partition is 13,376 rows, and using it would make the
+#: global methods the run's dominant cost by a wide margin: permutation
+#: importance rescores every row ten features times five shuffles, and a
+#: partial-dependence sweep rescores it twenty times per feature. That is
+#: roughly 2.7 million row-scores per model for PD alone, times twenty-eight
+#: models, to sharpen an estimate that is already stable.
+#:
+#: Two thousand rows are sampled deterministically instead. The sample is drawn
+#: once and shared by every model, so a difference between two models is a
+#: difference between the models rather than between their evaluation rows.
+DEFAULT_EVAL_ROWS: int = 2000
+
 #: Wall-clock ceiling per (model, method) pair. A method that exceeds it is
 #: recorded as RESOURCE_LIMIT rather than left running; "too slow at this
 #: budget" is a finding about the method, not a reason to have no result.
@@ -314,7 +328,11 @@ def plan(
 # ===================================================================== the run
 
 def _build_context(
-    train_rows: int, case_limit: int, *, seed: int = 0
+    train_rows: int,
+    case_limit: int,
+    *,
+    eval_rows: int = DEFAULT_EVAL_ROWS,
+    seed: int = 0,
 ) -> tuple[RunContext, dict[str, Any]]:
     """Assemble the partitions once, verifying the split before anything else."""
     frame = split.load_dataset()
@@ -328,9 +346,16 @@ def _build_context(
     narrowed = subsets.take(splits, ladder[train_rows])
 
     X_fit, y_fit = narrowed.X_train, narrowed.y_train
-    X_eval, y_eval = narrowed.X_val, narrowed.y_val
 
+    # One evaluation sample, drawn once and shared by every model, so a
+    # difference between two models is a difference between the models.
     rng = np.random.default_rng(seed)
+    full_val = narrowed.X_val
+    take = min(eval_rows, len(full_val))
+    evaluation = np.sort(rng.choice(len(full_val), size=take, replace=False))
+    X_eval = full_val.iloc[evaluation].reset_index(drop=True)
+    y_eval = narrowed.y_val.iloc[evaluation].reset_index(drop=True)
+
     chosen = np.sort(rng.choice(len(X_eval), size=min(case_limit, len(X_eval)), replace=False))
     cases = X_eval.iloc[chosen].reset_index(drop=True)
 
@@ -368,6 +393,7 @@ def run(
     model_ids: list[str] | None = None,
     method_ids: list[str] | None = None,
     case_limit: int = DEFAULT_CASE_LIMIT,
+    eval_rows: int = DEFAULT_EVAL_ROWS,
     output_root: Path | None = None,
     method_budget: float = DEFAULT_METHOD_BUDGET_SECONDS,
     overrides: dict[str, Any] | None = None,
@@ -381,7 +407,7 @@ def run(
     out_dir = root / run_id
     (out_dir / "records").mkdir(parents=True, exist_ok=True)
 
-    context, provenance = _build_context(train_rows, case_limit)
+    context, provenance = _build_context(train_rows, case_limit, eval_rows=eval_rows)
 
     specs = [REGISTRY.get(mid) for mid in model_ids] if model_ids else [
         s for s in REGISTRY if s.effective_status() is ResearchStatus.ACTIVE
@@ -431,6 +457,7 @@ def run(
         "elapsed_seconds": time.perf_counter() - started,
         "train_rows": train_rows,
         "case_limit": case_limit,
+        "eval_rows": len(context.X_eval),
         "models_requested": [s.model_id for s in specs],
         "methods_requested": [m.method_id for m in methods],
         "fit_failures": fit_failures,
@@ -533,6 +560,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--models", nargs="+", default=None)
     parser.add_argument("--methods", nargs="+", default=None)
     parser.add_argument("--case-limit", type=int, default=DEFAULT_CASE_LIMIT)
+    parser.add_argument(
+        "--eval-rows", type=int, default=DEFAULT_EVAL_ROWS,
+        help="Validation rows the global methods are scored on.",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
         "--method-budget", type=float, default=DEFAULT_METHOD_BUDGET_SECONDS
@@ -561,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         model_ids=args.models,
         method_ids=args.methods,
         case_limit=args.case_limit,
+        eval_rows=args.eval_rows,
         output_root=args.output_dir,
         method_budget=args.method_budget,
         with_interactions=not args.no_interactions,
