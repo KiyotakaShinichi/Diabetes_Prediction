@@ -401,6 +401,10 @@ def _build_context(
     provenance = {
         "train_rows": len(X_fit),
         "evaluation_rows": len(X_eval),
+        #: How large a pool the evaluation rows were sampled from. Recorded so a
+        #: reader can see the sampling fraction rather than having to know the
+        #: split's shape - the difference between 500 of 13,376 and 500 of 500.
+        "evaluation_pool_rows": len(full_val),
         "case_rows": len(cases),
         "case_indices": [int(i) for i in chosen],
         "baseline_source": "median of the fitting rows",

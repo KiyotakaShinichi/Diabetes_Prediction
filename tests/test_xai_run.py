@@ -353,3 +353,148 @@ def test_the_case_sample_is_deterministic():
 
     assert first.cases.equals(again.cases)
     assert np.allclose(first.baseline.to_numpy(), again.baseline.to_numpy())
+
+
+def test_the_evaluation_sample_is_bounded_and_shared():
+    """One sample, drawn once, so a model-to-model difference is about models.
+
+    Giving each model its own evaluation rows would make every cross-model
+    comparison partly a comparison of two row samples, and the resulting
+    disagreement would look like a finding about the models.
+    """
+    context, provenance = xai_run._build_context(200, 6, eval_rows=120)
+
+    assert len(context.X_eval) == 120
+    assert len(context.y_eval) == 120
+    assert provenance["evaluation_rows"] == 120
+    assert provenance["evaluation_pool_rows"] > 120
+
+    again, _ = xai_run._build_context(200, 6, eval_rows=120)
+    assert context.X_eval.equals(again.X_eval)
+
+
+# ================================================================ the sweeps
+
+def test_the_stability_sweep_reports_how_far_the_top_feature_survives(smoke_context):
+    """Occlusion is the probe because it is the one method every scored model has.
+
+    A stability figure computed with whichever method happened to apply would
+    describe the method as much as the model, and could not be compared across
+    families.
+    """
+    model, context = smoke_context
+
+    summary = xai_run._stability_for(model, context)
+
+    assert summary["probe"] == "occlusion profile"
+    assert summary["measured"] is True
+    assert len(summary["points"]) == len(xai_run.RUN_STABILITY_MAGNITUDES)
+    assert all(p["replicates"] == xai_run.RUN_STABILITY_REPEATS for p in summary["points"])
+
+
+def test_a_sweep_that_raises_is_recorded_rather_than_aborting_the_run(
+    smoke_context, monkeypatch
+):
+    """One model's failed sweep must not cost every result after it."""
+    model, context = smoke_context
+
+    def explode(*args, **kwargs):
+        raise ValueError("deliberate")
+
+    monkeypatch.setattr(xai_run.stability, "stability_curve", explode)
+    assert "deliberate" in xai_run._stability_for(model, context)["error"]
+
+    monkeypatch.setattr(xai_run.faithfulness, "evaluate", explode)
+    records = _global_records(model, context)
+    assert "deliberate" in xai_run._faithfulness_for(model, context, records)["error"]
+
+    monkeypatch.setattr(xai_run.interactions, "rank_interactions", explode)
+    assert "deliberate" in xai_run._interactions_for(model, context, records)["error"]
+
+
+def test_the_faithfulness_sweep_scores_the_models_own_consensus_ranking(smoke_context):
+    model, context = smoke_context
+
+    summary = xai_run._faithfulness_for(model, context, _global_records(model, context))
+
+    assert set(summary["ranking"]) == set(context.feature_names)
+    assert "deletion_gap" in summary
+    assert "beats_random" in summary
+
+
+def test_the_interaction_sweep_is_scoped_to_the_models_own_top_features(smoke_context):
+    """An interaction between two features a model ignores is not a finding."""
+    model, context = smoke_context
+
+    summary = xai_run._interactions_for(model, context, _global_records(model, context))
+
+    assert len(summary["features"]) == xai_run.DEFAULT_INTERACTION_FEATURES
+    assert summary["pairs"] == 10
+
+
+# =================================================================== the CLI
+
+def test_the_dry_run_prints_the_matrix_without_running_anything(capsys):
+    """What makes the budget a plan rather than a hope."""
+    assert xai_run.main(["--dry-run", "--models", "logistic_l2", "random_forest"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "18 pairs" in printed
+    assert "run  logistic_l2" in printed
+    assert "skip random_forest" in printed
+    assert "native_coefficients" in printed
+
+
+def test_the_cli_runs_a_bounded_sweep_and_writes_a_manifest(tmp_path, capsys):
+    model_zoo_smoke = [
+        "--models", "logistic_l2",
+        "--methods", "coefficients",
+        "--train-rows", "200", "--case-limit", "2", "--eval-rows", "60",
+        "--no-interactions", "--no-sweeps",
+        "--output-dir", str(tmp_path),
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert xai_run.main(model_zoo_smoke) == 0
+
+    printed = capsys.readouterr().out
+    assert "RESOURCE_CONSTRAINED_EXPLORATORY" in printed
+    manifests = list(tmp_path.glob("*/run_manifest.json"))
+    assert len(manifests) == 1
+    assert json.loads(manifests[0].read_text(encoding="utf-8"))["train_rows"] == 200
+
+
+def test_skipping_the_sweeps_leaves_their_files_unwritten(tmp_path):
+    """A file that exists but is empty would read as a measurement of nothing."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        manifest = xai_run.run(
+            train_rows=200, model_ids=["logistic_l2"], method_ids=["coefficients"],
+            case_limit=2, eval_rows=60, output_root=tmp_path,
+            with_interactions=False, with_sweeps=False,
+        )
+
+    directory = next(tmp_path.glob(manifest["run_id"]))
+    assert not (directory / "stability.json").exists()
+    assert not (directory / "faithfulness.json").exists()
+    assert not (directory / "interactions.json").exists()
+    assert manifest["stability"] == {}
+    assert manifest["faithfulness"] == {}
+
+
+@pytest.fixture(scope="module")
+def smoke_context():
+    """One cheap fitted model plus the partitions the sweeps read."""
+    context, _ = xai_run._build_context(200, 8, eval_rows=80)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = REGISTRY.build("logistic_l2").fit(context.X_fit, context.y_fit)
+    return model, context
+
+
+def _global_records(model, context):
+    """The records a sweep needs: one global explanation is enough for a ranking."""
+    spec = REGISTRY.get("logistic_l2")
+    outcomes = xai_run.explain_pair(spec, model, METHODS.get("coefficients"), context)
+    return [o.record for o in outcomes if o.record]
