@@ -147,7 +147,7 @@ jobs:
           # coverage-research.toml measures source=["research"], so a package
           # whose tests are missing from this line reports 0% and sinks the
           # total. tests/test_config_contracts.py asserts the two stay in step.
-          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py
+          coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py tests/test_xai_*.py
           coverage report --rcfile=coverage-research.toml
 
       - name: Model-zoo registry and smoke

@@ -404,7 +404,7 @@ The Track K research package is measured **separately**, by its own
 configuration and its own data file:
 
 ```powershell
-coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py
+coverage run --rcfile=coverage-research.toml -m pytest -q tests/test_track_k_*.py tests/test_model_zoo_*.py tests/test_xai_*.py
 coverage report --rcfile=coverage-research.toml
 ```
 
