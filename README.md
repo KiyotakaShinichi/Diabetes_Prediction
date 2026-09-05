@@ -782,6 +782,8 @@ generated cards and reports rather than trusting review.
 
 - [docs/research/track_m_xai.md](docs/research/track_m_xai.md) — the protocol,
   and the seven claims that measurement forced a rewrite of
+- [docs/research/track_m_results.md](docs/research/track_m_results.md) — what
+  2,350 explanations of twenty-nine models actually said
 
 ```powershell
 # See which (model, method) pairs are valid before spending time on them.
