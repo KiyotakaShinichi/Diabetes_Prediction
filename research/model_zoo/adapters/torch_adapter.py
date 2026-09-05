@@ -89,6 +89,17 @@ class TorchAdapter:
         levels = deep_preprocessing.encode_ordinal_levels(self._vocabulary, X)
         return numeric, levels
 
+    def encode(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """The exact ``(numeric, levels)`` pair this model's module consumes.
+
+        Public because the gradient explainers differentiate the module with
+        respect to its real input, and reproducing the standardiser and the
+        ordinal vocabulary outside this class would mean an attribution
+        computed in a feature space slightly different from the model's own.
+        """
+        self._require_fitted()
+        return self._encode(X)
+
     def fit(self, X: pd.DataFrame, y: pd.Series) -> TorchAdapter:
         self._feature_names = tuple(X.columns)
         self._vocabulary = deep_preprocessing.build_ordinal_vocabulary(self._feature_names)
