@@ -126,11 +126,15 @@ def render_consensus(analysis: dict[str, Any]) -> str:
     lines = [
         "## What the zoo attributes to, on average",
         "",
-        "| rank | feature | mean rank across explanations |",
-        "|---|---|---|",
+        "| rank | feature | mean rank across explanations | position |",
+        "|---|---|---|---|",
     ]
     for position, feature in enumerate(consensus, start=1):
-        lines.append(f"| {position} | `{feature}` | {_optional(mean_ranks.get(feature), 2)} |")
+        value = mean_ranks.get(feature)
+        lines.append(
+            f"| {position} | `{feature}` | {_optional(value, 2)} | "
+            f"{_rank_bar(value, len(consensus))} |"
+        )
 
     ties = _near_ties(consensus, mean_ranks)
     lines += ["", ""]
@@ -154,6 +158,28 @@ def render_consensus(analysis: dict[str, Any]) -> str:
         "implication that acting on them would change anyone's risk.",
     ]
     return "\n".join(lines)
+
+
+#: Width of the rank bar. Twenty cells is enough to see the shape of the
+#: ordering at a glance and narrow enough to survive a terminal.
+BAR_WIDTH: int = 20
+
+
+def _rank_bar(mean_rank: float | None, features: int) -> str:
+    """A bar showing how far up the ordering a feature sits.
+
+    **This is a position, not a magnitude**, and the column is labelled that way.
+    Drawing a bar proportional to attribution share would be more useful and is
+    not available here: shares are in each method's own units and only the ranks
+    survive the translation between families. A bar that looked like a magnitude
+    while encoding a rank is precisely the kind of chart this track exists to
+    avoid, so the length encodes distance from last place and nothing else.
+    """
+    if mean_rank is None or features < 2:
+        return ""
+    position = (features - float(mean_rank)) / (features - 1)
+    filled = max(0, min(BAR_WIDTH, round(position * BAR_WIDTH)))
+    return "#" * filled + "." * (BAR_WIDTH - filled)
 
 
 def _near_ties(

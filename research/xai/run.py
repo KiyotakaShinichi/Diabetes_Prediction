@@ -103,9 +103,16 @@ DEFAULT_EVAL_ROWS: int = 500
 #: returns when a shape is wanted rather than a scalar.
 RUN_PD_GRID_POINTS: int = 10
 
-#: Wall-clock ceiling per (model, method) pair. A method that exceeds it is
-#: recorded as RESOURCE_LIMIT rather than left running; "too slow at this
-#: budget" is a finding about the method, not a reason to have no result.
+#: Wall-clock ceiling per (model, method) pair.
+#:
+#: Checked *after* the method returns, not enforced during it: a method that
+#: overruns is allowed to finish and is then recorded as RESOURCE_LIMIT with its
+#: attribution discarded. Interrupting a running explainer would mean threads or
+#: signals for a research harness, and would leave the model in an unknown state
+#: partway through a torch backward pass. The consequence to be honest about is
+#: that a pathologically slow method still costs its full wall-clock time once;
+#: the budget stops it being *reported*, not from happening. Track L's benchmark
+#: made the same trade for the same reason.
 DEFAULT_METHOD_BUDGET_SECONDS: float = 240.0
 
 #: Feature pairs measured for interaction per model. Ten features give
